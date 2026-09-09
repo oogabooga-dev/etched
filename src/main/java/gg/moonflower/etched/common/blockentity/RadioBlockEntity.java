@@ -1,23 +1,19 @@
 package gg.moonflower.etched.common.blockentity;
 
-import gg.moonflower.etched.api.sound.SoundTracker;
 import gg.moonflower.etched.common.block.RadioBlock;
+import gg.moonflower.etched.common.radio.RadioClientBridge;
+import gg.moonflower.etched.common.radio.RadioConfiguration;
 import gg.moonflower.etched.core.registry.EtchedBlocks;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
-import net.minecraft.util.StringUtil;
 import net.minecraft.world.Clearable;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -26,36 +22,20 @@ import java.util.Objects;
 public class RadioBlockEntity extends BlockEntity implements Clearable {
 
     private String url;
-    private boolean loaded;
 
     public RadioBlockEntity(BlockPos pos, BlockState state) {
         super(EtchedBlocks.RADIO_BE.get(), pos, state);
     }
 
     public static void tick(Level level, BlockPos pos, BlockState state, RadioBlockEntity blockEntity) {
-        if (level == null || !level.isClientSide()) {
-            return;
-        }
-
-        if (!blockEntity.loaded) {
-            blockEntity.loaded = true;
-            SoundTracker.playRadio(blockEntity.url, state, (ClientLevel) level, pos);
-        }
-
-        if (blockEntity.isPlaying()) {
-            AABB range = new AABB(pos).inflate(3.45);
-            List<LivingEntity> livingEntities = level.getEntitiesOfClass(LivingEntity.class, range);
-            livingEntities.forEach(living -> living.setRecordPlayingNearby(pos, true));
-        }
+        RadioClientBridge.tick(level, pos, blockEntity.getConfiguration(state));
     }
 
     @Override
     public void load(CompoundTag nbt) {
         super.load(nbt);
         this.url = nbt.contains("Url", Tag.TAG_STRING) ? nbt.getString("Url") : null;
-        if (this.loaded) {
-            SoundTracker.playRadio(this.url, this.getBlockState(), (ClientLevel) this.level, this.getBlockPos());
-        }
+        this.publishUpdate();
     }
 
     @Override
@@ -79,9 +59,7 @@ public class RadioBlockEntity extends BlockEntity implements Clearable {
     @Override
     public void clearContent() {
         this.url = null;
-        if (this.level != null && this.level.isClientSide()) {
-            SoundTracker.playRadio(this.url, this.getBlockState(), (ClientLevel) this.level, this.getBlockPos());
-        }
+        this.publishUpdate();
     }
 
     public String getUrl() {
@@ -95,11 +73,55 @@ public class RadioBlockEntity extends BlockEntity implements Clearable {
             if (this.level != null) {
                 this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
             }
+            this.publishUpdate();
         }
     }
 
-    public boolean isPlaying() {
-        BlockState state = this.getBlockState();
-        return (!state.hasProperty(RadioBlock.POWERED) || !state.getValue(RadioBlock.POWERED)) && !StringUtil.isNullOrEmpty(this.url);
+    public boolean isConfiguredAndEnabled() {
+        return this.getConfiguration(this.getBlockState()).isEnabled();
+    }
+
+    @Override
+    public void onLoad() {
+        super.onLoad();
+        this.publishUpdate();
+    }
+
+    @Override
+    public void onChunkUnloaded() {
+        this.publishRemove();
+        super.onChunkUnloaded();
+    }
+
+    @Override
+    public void setRemoved() {
+        this.publishRemove();
+        super.setRemoved();
+    }
+
+    @Override
+    public void setBlockState(BlockState state) {
+        boolean powered = this.getConfiguration(this.getBlockState()).powered();
+        super.setBlockState(state);
+        if (powered != this.getConfiguration(state).powered()) {
+            this.publishUpdate();
+        }
+    }
+
+    private RadioConfiguration getConfiguration(BlockState state) {
+        boolean powered = state.hasProperty(RadioBlock.POWERED) && state.getValue(RadioBlock.POWERED);
+        return new RadioConfiguration(this.url, powered);
+    }
+
+    private void publishUpdate() {
+        if (this.level != null) {
+            RadioClientBridge.update(this.level, this.worldPosition, this.getConfiguration(this.getBlockState()));
+        }
+    }
+
+    private void publishRemove() {
+        if (this.level != null) {
+            RadioClientBridge.remove(this.level, this.worldPosition);
+        }
     }
 }
