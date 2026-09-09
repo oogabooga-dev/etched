@@ -4,11 +4,9 @@ import gg.moonflower.etched.common.blockentity.RadioBlockEntity;
 import gg.moonflower.etched.common.menu.RadioMenu;
 import gg.moonflower.etched.common.network.EtchedMessages;
 import gg.moonflower.etched.common.network.play.ClientboundSetUrlPacket;
+import gg.moonflower.etched.common.radio.RadioClientBridge;
 import gg.moonflower.etched.core.Etched;
-import gg.moonflower.etched.core.mixin.client.LevelRendererAccessor;
 import gg.moonflower.etched.core.registry.EtchedBlocks;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
@@ -38,8 +36,6 @@ import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraftforge.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
-
-import java.util.Map;
 
 public class RadioBlock extends BaseEntityBlock {
 
@@ -99,7 +95,7 @@ public class RadioBlock extends BaseEntityBlock {
         if (!state.is(newState.getBlock())) {
             BlockEntity blockEntity = level.getBlockEntity(pos);
             if (blockEntity instanceof RadioBlockEntity) {
-                if (((RadioBlockEntity) blockEntity).isPlaying()) {
+                if (((RadioBlockEntity) blockEntity).isConfiguredAndEnabled()) {
                     level.levelEvent(1011, pos, 0);
                 }
                 Clearable.tryClear(blockEntity);
@@ -183,9 +179,7 @@ public class RadioBlock extends BaseEntityBlock {
             return;
         }
 
-        Minecraft minecraft = Minecraft.getInstance();
-        Map<BlockPos, SoundInstance> sounds = ((LevelRendererAccessor) minecraft.levelRenderer).getPlayingRecords();
-        if (sounds.containsKey(pos) && minecraft.getSoundManager().isActive(sounds.get(pos))) {
+        if (RadioClientBridge.isPlaying(level, pos)) {
             level.addParticle(ParticleTypes.NOTE, pos.getX() + 0.5D, pos.getY() + 0.7D, pos.getZ() + 0.5D, random.nextInt(25) / 24D, 0, 0);
         }
     }
