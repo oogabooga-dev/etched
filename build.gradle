@@ -11,9 +11,6 @@ base {
 version = project.mod_version
 group = project.maven_group
 
-sourceCompatibility = 17
-targetCompatibility = 17
-
 loom {
     accessWidenerPath = file("src/main/resources/${project.mod_id}.accesswidener")
 
@@ -29,20 +26,6 @@ loom {
 
 repositories {
     mavenLocal()
-//    maven {
-//        // location of the maven that hosts JEI files since January 2023
-//        name = "Jared's maven"
-//        url = "https://maven.blamejared.com/"
-//    }
-//    maven {
-//        // location of a maven mirror for JEI files, as a fallback
-//        name = "ModMaven"
-//        url = "https://modmaven.dev"
-//    }
-    maven {
-        name = 'ParchmentMC'
-        url = 'https://maven.parchmentmc.org'
-    }
 }
 
 configurations {
@@ -51,15 +34,20 @@ configurations {
 
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings loom.layered() {
-        officialMojangMappings()
-        parchment("org.parchmentmc.data:parchment-${project.minecraft_version}:${project.parchment_version}@zip")
-    }
+    mappings loom.officialMojangMappings()
 
     forge "net.minecraftforge:forge:${rootProject.minecraft_version}-${rootProject.forge_version}"
 
     shadowCommon(implementation("javazoom:jlayer:1.0.1"))
     forgeRuntimeLibrary("javazoom:jlayer:1.0.1")
+
+    testImplementation(platform("org.junit:junit-bom:5.13.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+test {
+    useJUnitPlatform()
 }
 
 processResources {
