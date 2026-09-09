@@ -35,6 +35,7 @@ public record RadioFailure(Code code, boolean recoverable, String message, @Null
         UNSUPPORTED_AUDIO,
         DECODER_FAILURE,
         RESOURCE_LIMIT,
+        UNSAFE_HTTP_STATE,
         UNKNOWN
     }
 }
