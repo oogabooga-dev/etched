@@ -43,6 +43,8 @@ class RadioPlaybackManagerTest {
 
         assertEquals(2, driver.applied.size());
         assertEquals(new RadioConfiguration(ENABLED.url(), true), manager.getConfiguration(key).orElseThrow());
+        assertEquals(RadioPlaybackState.STOPPED,
+                manager.getSessionSnapshot(key).orElseThrow().state());
     }
 
     @Test
@@ -128,6 +130,64 @@ class RadioPlaybackManagerTest {
         assertEquals(new BlockPos(1, 2, 3), key.pos());
     }
 
+    @Test
+    void replacementAndRedstoneCancelThePreviousGeneration() {
+        RecordingDriver playback = new RecordingDriver();
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioPlaybackManager manager = new RadioPlaybackManager(playback, sessions);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.update(key, ENABLED);
+        StartedSession first = sessions.started.get(0);
+        assertFalse(manager.update(key, ENABLED));
+        assertFalse(first.attempt().cancellation().isCancelled());
+        manager.update(key, new RadioConfiguration("https://radio.example/new", false));
+        StartedSession second = sessions.started.get(1);
+
+        assertTrue(first.attempt().cancellation().isCancelled());
+        assertFalse(first.session().advance(first.attempt().generation(), RadioPlaybackState.CONNECTING));
+        assertFalse(second.attempt().cancellation().isCancelled());
+
+        manager.update(key, new RadioConfiguration(second.configuration().url(), true));
+
+        assertTrue(second.attempt().cancellation().isCancelled());
+        assertEquals(2, sessions.started.size());
+        assertEquals(RadioPlaybackState.STOPPED,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+    }
+
+    @Test
+    void normalizesSurroundingUrlWhitespaceBeforeStartingASession() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.update(key, new RadioConfiguration("   ", false));
+        manager.update(key, new RadioConfiguration("  https://radio.example/live  ", false));
+
+        assertEquals(1, sessions.started.size());
+        assertEquals("https://radio.example/live", sessions.started.get(0).attempt().source());
+    }
+
+    @Test
+    void removeAndClearCancelEveryOwnedSession() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions);
+        RadioKey firstKey = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey secondKey = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+        manager.update(firstKey, ENABLED);
+        manager.update(secondKey, ENABLED);
+        StartedSession first = sessions.started.get(0);
+        StartedSession second = sessions.started.get(1);
+
+        manager.remove(firstKey);
+        manager.clearAll();
+
+        assertTrue(first.attempt().cancellation().isCancelled());
+        assertTrue(second.attempt().cancellation().isCancelled());
+        assertEquals(Set.of(firstKey, secondKey), new HashSet<>(sessions.stopped));
+    }
+
     private static ResourceKey<Level> dimension(String path) {
         return ResourceKey.create(Registries.DIMENSION, new ResourceLocation("etched_test", path));
     }
@@ -166,6 +226,34 @@ class RadioPlaybackManagerTest {
         }
     }
 
+    private static final class RecordingSessionDriver implements RadioPlaybackManager.SessionDriver {
+
+        private final List<StartedSession> started = new ArrayList<>();
+        private final List<RadioKey> stopped = new ArrayList<>();
+
+        @Override
+        public void start(RadioKey key, RadioConfiguration configuration, RadioSession session,
+                          RadioSession.Attempt attempt) {
+            this.started.add(new StartedSession(key, configuration, session, attempt));
+        }
+
+        @Override
+        public void stop(RadioKey key, RadioSession session) {
+            StartedSession startedSession = this.started.stream()
+                    .filter(started -> started.session() == session)
+                    .findFirst()
+                    .orElse(null);
+            if (startedSession != null) {
+                assertTrue(startedSession.attempt().cancellation().isCancelled());
+            }
+            this.stopped.add(key);
+        }
+    }
+
     private record AppliedConfiguration(RadioKey key, RadioConfiguration configuration) {
+    }
+
+    private record StartedSession(RadioKey key, RadioConfiguration configuration, RadioSession session,
+                                  RadioSession.Attempt attempt) {
     }
 }

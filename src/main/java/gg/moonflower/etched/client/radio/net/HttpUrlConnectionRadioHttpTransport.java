@@ -91,7 +91,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
         try {
             while (true) {
                 cancellation.throwIfCancelled();
-                this.networkPolicy.check(current);
+                this.networkPolicy.check(current, cancellation);
                 cancellation.throwIfCancelled();
                 if (!visited.add(current)) {
                     throw failure(RadioFailure.Code.TOO_MANY_REDIRECTS, false,
@@ -137,6 +137,9 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
             }
         } catch (RadioTransportException exception) {
             throw exception.withRedirectCount(redirects);
+        } catch (RuntimeException exception) {
+            cancellation.throwIfCancelled();
+            throw exception;
         } finally {
             if (!transferred) {
                 exchange.closeTerminal();

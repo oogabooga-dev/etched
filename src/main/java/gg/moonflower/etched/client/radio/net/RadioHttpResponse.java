@@ -120,6 +120,9 @@ public final class RadioHttpResponse implements AutoCloseable {
             } catch (IOException exception) {
                 this.cancellation.throwIfCancelled();
                 throw interruptedResponse(exception);
+            } catch (RuntimeException exception) {
+                this.cancellation.throwIfCancelled();
+                throw exception;
             }
         }
 
@@ -137,6 +140,9 @@ public final class RadioHttpResponse implements AutoCloseable {
             } catch (IOException exception) {
                 this.cancellation.throwIfCancelled();
                 throw interruptedResponse(exception);
+            } catch (RuntimeException exception) {
+                this.cancellation.throwIfCancelled();
+                throw exception;
             }
         }
 
@@ -154,6 +160,9 @@ public final class RadioHttpResponse implements AutoCloseable {
             } catch (IOException exception) {
                 this.cancellation.throwIfCancelled();
                 throw interruptedResponse(exception);
+            } catch (RuntimeException exception) {
+                this.cancellation.throwIfCancelled();
+                throw exception;
             }
         }
 
@@ -165,6 +174,9 @@ public final class RadioHttpResponse implements AutoCloseable {
             } catch (IOException exception) {
                 this.cancellation.throwIfCancelled();
                 throw interruptedResponse(exception);
+            } catch (RuntimeException exception) {
+                this.cancellation.throwIfCancelled();
+                throw exception;
             }
         }
 

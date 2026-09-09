@@ -77,6 +77,110 @@ class DirectRadioSourceResolverTest {
     }
 
     @Test
+    void detectsSuffixlessPlaylistsWithWhitespaceAndBareRelativeEntries() throws Exception {
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/m3u", exchange -> {
+                exchange.getResponseHeaders().add("Content-Type", "application/octet-stream");
+                respond(exchange, 200, bytes("   station.mp3\n"));
+            });
+            server.handle("/pls", exchange -> {
+                exchange.getResponseHeaders().add("Content-Type", "application/octet-stream");
+                respond(exchange, 200, bytes("  [playlist]\nFile1=station.mp3\n"));
+            });
+            server.handle("/station.mp3", exchange -> {
+                exchange.getResponseHeaders().add("Content-Type", "audio/mpeg");
+                respond(exchange, 200, bytes("ID3-audio"));
+            });
+
+            try (RadioResolvedSource m3u = resolver().resolve(server.uri("/m3u"), context());
+                 RadioResolvedSource pls = resolver().resolve(server.uri("/pls"), context())) {
+                assertEquals(server.uri("/station.mp3"), m3u.uri());
+                assertEquals(server.uri("/station.mp3"), pls.uri());
+            }
+        }
+    }
+
+    @Test
+    void playlistLookingCandidatesStillRequestIcyMetadataWhenTheyReturnAudio() throws Exception {
+        AtomicReference<Headers> headers = new AtomicReference<>();
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/station.m3u", exchange -> {
+                headers.set(exchange.getRequestHeaders());
+                exchange.getResponseHeaders().add("Content-Type", "audio/mpeg");
+                respond(exchange, 200, bytes("ID3-audio"));
+            });
+
+            try (RadioResolvedSource source = resolver().resolve(server.uri("/station.m3u"), context())) {
+                assertEquals(RadioResolvedSource.Format.MP3, source.format());
+            }
+            assertEquals("1", headers.get().getFirst("Icy-MetaData"));
+        }
+    }
+
+    @Test
+    void repeatedResolutionCreatesIndependentResponses() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/live", exchange -> {
+                int request = requests.incrementAndGet();
+                exchange.getResponseHeaders().add("Content-Type", "audio/mpeg");
+                respond(exchange, 200, bytes("ID3-stream-" + request));
+            });
+            DirectRadioSourceResolver resolver = resolver();
+            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+                    Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 5);
+            RadioSession firstSession = new RadioSession();
+            RadioSession secondSession = new RadioSession();
+            RadioSession.Attempt firstAttempt = firstSession.start(server.uri("/live").toString());
+            RadioSession.Attempt secondAttempt = secondSession.start(server.uri("/live").toString());
+            RadioResolveContext firstContext = new RadioResolveContext(
+                    transport, ALLOW_TEST_SERVER, firstAttempt.cancellation(), limits());
+            RadioResolveContext secondContext = new RadioResolveContext(
+                    transport, ALLOW_TEST_SERVER, secondAttempt.cancellation(), limits());
+
+            try (RadioResolvedSource first = resolver.resolve(server.uri("/live"), firstContext);
+                 RadioResolvedSource second = resolver.resolve(server.uri("/live"), secondContext)) {
+                firstSession.stop();
+                assertThrows(CancellationException.class, () -> first.body().read());
+                assertArrayEquals(bytes("ID3-stream-2"), second.body().readAllBytes());
+            }
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test
+    void binaryAudioSignatureDoesNotWaitForTheStreamToEnd() throws Exception {
+        CountDownLatch signatureSent = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/live", exchange -> {
+                exchange.sendResponseHeaders(200, 0);
+                exchange.getResponseBody().write(new byte[]{(byte) 0xFF, (byte) 0xFB, 0, 0});
+                exchange.getResponseBody().flush();
+                signatureSent.countDown();
+                await(release);
+                exchange.close();
+            });
+            CompletableFuture<RadioResolvedSource> result = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return resolver().resolve(server.uri("/live"), context());
+                } catch (RadioSourceException exception) {
+                    throw new java.util.concurrent.CompletionException(exception);
+                }
+            });
+
+            try {
+                assertTrue(signatureSent.await(1, TimeUnit.SECONDS));
+                try (RadioResolvedSource source = result.get(1, TimeUnit.SECONDS)) {
+                    assertEquals(RadioResolvedSource.Format.MP3, source.format());
+                }
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
     void resolvesRelativeM3uEntriesAndUsesRecoverableFallback() throws Exception {
         AtomicInteger primaryRequests = new AtomicInteger();
         AtomicInteger backupRequests = new AtomicInteger();

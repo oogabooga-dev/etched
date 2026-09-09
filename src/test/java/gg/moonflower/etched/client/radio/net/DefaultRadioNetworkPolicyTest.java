@@ -1,6 +1,7 @@
 package gg.moonflower.etched.client.radio.net;
 
 import gg.moonflower.etched.client.radio.RadioFailure;
+import gg.moonflower.etched.client.radio.RadioSession;
 import org.junit.jupiter.api.Test;
 
 import java.net.Inet6Address;
@@ -8,10 +9,17 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.util.List;
+import java.time.Duration;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -130,11 +138,88 @@ class DefaultRadioNetworkPolicyTest {
         assertTrue(exception.recoverable());
     }
 
+    @Test
+    void cancellationReleasesACallerBlockedOnDns() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        DefaultRadioNetworkPolicy policy = new DefaultRadioNetworkPolicy(
+                () -> false, host -> {
+                    started.countDown();
+                    awaitDnsIgnoringInterrupt(release);
+                    return new InetAddress[]{literal("8.8.8.8")};
+                }, Duration.ofSeconds(5));
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(RADIO_URI.toString());
+        CompletableFuture<Void> check = CompletableFuture.runAsync(() -> {
+            try {
+                policy.check(RADIO_URI, attempt.cancellation());
+            } catch (RadioTransportException exception) {
+                throw new java.util.concurrent.CompletionException(exception);
+            }
+        });
+
+        try {
+            assertTrue(started.await(1, TimeUnit.SECONDS));
+            session.stop();
+            ExecutionException exception = assertThrows(ExecutionException.class,
+                    () -> check.get(1, TimeUnit.SECONDS));
+            assertInstanceOf(CancellationException.class, exception.getCause());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void reportsBoundedDnsTimeoutAsRecoverableConnectTimeout() {
+        CountDownLatch release = new CountDownLatch(1);
+        DefaultRadioNetworkPolicy policy = new DefaultRadioNetworkPolicy(
+                () -> false, host -> {
+                    awaitDns(release);
+                    return new InetAddress[]{literal("8.8.8.8")};
+                }, Duration.ofMillis(50));
+        RadioSession.Attempt attempt = new RadioSession().start(RADIO_URI.toString());
+
+        try {
+            RadioTransportException exception = assertThrows(RadioTransportException.class,
+                    () -> policy.check(RADIO_URI, attempt.cancellation()));
+
+            assertEquals(RadioFailure.Code.CONNECT_TIMEOUT, exception.code());
+            assertTrue(exception.recoverable());
+        } finally {
+            release.countDown();
+        }
+    }
+
     private static DefaultRadioNetworkPolicy policy(boolean allowPrivate, InetAddress... addresses) {
         return new DefaultRadioNetworkPolicy(() -> allowPrivate, host -> addresses);
     }
 
     private static InetAddress literal(String address) throws UnknownHostException {
         return InetAddress.getByName(address);
+    }
+
+    private static void awaitDns(CountDownLatch latch) throws UnknownHostException {
+        try {
+            latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            UnknownHostException failure = new UnknownHostException("DNS lookup interrupted");
+            failure.initCause(exception);
+            throw failure;
+        }
+    }
+
+    private static void awaitDnsIgnoringInterrupt(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (latch.getCount() > 0) {
+            try {
+                latch.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

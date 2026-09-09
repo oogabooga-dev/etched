@@ -575,6 +575,54 @@ class HttpUrlConnectionRadioHttpTransportTest {
     }
 
     @Test
+    void cancellationWinsOverUncheckedDisconnectFailureDuringBodyRead() throws Exception {
+        CountDownLatch readStarted = new CountDownLatch(1);
+        CountDownLatch disconnected = new CountDownLatch(1);
+        TrackingConnection connection = new TrackingConnection() {
+            @Override
+            public InputStream getInputStream() {
+                return new InputStream() {
+                    @Override
+                    public int read() {
+                        readStarted.countDown();
+                        await(disconnected);
+                        throw new IllegalStateException("connection was disconnected");
+                    }
+                };
+            }
+
+            @Override
+            public void disconnect() {
+                super.disconnect();
+                disconnected.countDown();
+            }
+        };
+        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+                Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
+                (uri, proxy) -> connection);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("http://radio.example/live");
+        try (RadioHttpResponse response = transport.execute(
+                RadioHttpRequest.audio(URI.create("http://radio.example/live")),
+                attempt.cancellation())) {
+            CompletableFuture<Integer> read = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return response.body().read();
+                } catch (IOException exception) {
+                    throw new java.util.concurrent.CompletionException(exception);
+                }
+            });
+
+            assertTrue(readStarted.await(1, TimeUnit.SECONDS));
+            session.stop();
+
+            ExecutionException exception = assertThrows(ExecutionException.class,
+                    () -> read.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(CancellationException.class, exception.getCause());
+        }
+    }
+
+    @Test
     void cancellationDisconnectsABlockedBodyRead() throws Exception {
         CountDownLatch bodyStarted = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);

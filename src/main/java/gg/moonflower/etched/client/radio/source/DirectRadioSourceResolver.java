@@ -45,11 +45,8 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                                                 List<URI> stationEndpoints) throws RadioSourceException {
         context.cancellation().throwIfCancelled();
         consumeSteps(state, 1, context.limits());
-        checkPolicy(input, context);
 
-        String suffix = suffix(input);
-        RadioHttpRequest request = suffix.equals("m3u") || suffix.equals("pls")
-                ? RadioHttpRequest.resource(input) : RadioHttpRequest.audio(input);
+        RadioHttpRequest request = RadioHttpRequest.audio(input);
         request = request.withMaxRedirects(context.limits().maxResolutionSteps() - state.steps);
         RadioHttpResponse response;
         try {
@@ -63,10 +60,9 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
             }
             throw RadioSourceException.fromTransport(exception);
         }
-        consumeSteps(state, response.redirectCount(), context.limits());
-
         boolean transferred = false;
         try {
+            consumeSteps(state, response.redirectCount(), context.limits());
             requireSuccessfulStatus(response.statusCode());
             byte[] prefix = readPrefix(response, input, context);
             SourceKind kind = classify(response, input, prefix);
@@ -144,20 +140,12 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         for (URI endpoint : endpoints) {
             context.cancellation().throwIfCancelled();
             try {
-                context.networkPolicy().check(endpoint);
+                context.networkPolicy().check(endpoint, context.cancellation());
             } catch (RadioTransportException exception) {
                 if (!exception.recoverable()) {
                     throw RadioSourceException.fromTransport(exception);
                 }
             }
-        }
-    }
-
-    private static void checkPolicy(URI uri, RadioResolveContext context) throws RadioSourceException {
-        try {
-            context.networkPolicy().check(uri);
-        } catch (RadioTransportException exception) {
-            throw RadioSourceException.fromTransport(exception);
         }
     }
 
@@ -257,6 +245,10 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         if (hasMpegAudioSignature(prefix)) {
             return SourceKind.MP3;
         }
+        if (startsWith(prefix, "ID3")) {
+            return isAacHint(contentType, suffix, requestedSuffix)
+                    ? SourceKind.AAC : SourceKind.MP3;
+        }
         if (containsHlsDirective(upper)) {
             return SourceKind.HLS;
         }
@@ -274,13 +266,8 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         if (text.startsWith("<")) {
             return SourceKind.UNKNOWN;
         }
-        if (suffix.equals("aac") || suffix.equals("aacp")
-                || requestedSuffix.equals("aac") || requestedSuffix.equals("aacp")
-                || contentType.equals("audio/aac") || contentType.equals("audio/aacp")) {
+        if (isAacHint(contentType, suffix, requestedSuffix)) {
             return SourceKind.AAC;
-        }
-        if (startsWith(prefix, "ID3")) {
-            return SourceKind.MP3;
         }
         if (suffix.equals("m3u8") || requestedSuffix.equals("m3u8")
                 || contentType.equals("application/vnd.apple.mpegurl")) {
@@ -309,6 +296,12 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         return SourceKind.UNKNOWN;
     }
 
+    private static boolean isAacHint(String contentType, String suffix, String requestedSuffix) {
+        return suffix.equals("aac") || suffix.equals("aacp")
+                || requestedSuffix.equals("aac") || requestedSuffix.equals("aacp")
+                || contentType.equals("audio/aac") || contentType.equals("audio/aacp");
+    }
+
     private static boolean isPlaylistHint(RadioHttpResponse response, URI requestedUri) {
         String contentType = response.firstHeader("Content-Type")
                 .map(value -> value.split(";", 2)[0].trim().toLowerCase(Locale.ROOT))
@@ -328,10 +321,18 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         if (prefix.length == 0) {
             return false;
         }
-        int first = prefix[0] & 0xFF;
-        return first == '#' || first == '[' || first == '<' || first == '/'
-                || first == '.' || first == '?' || first == 'h' || first == 'H'
-                || first == 0xEF;
+        if (startsWith(prefix, "ID3") || startsWith(prefix, "OggS")
+                || hasAdtsSignature(prefix) || hasMpegAudioSignature(prefix)) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            int current = prefix[i] & 0xFF;
+            if (current != '\t' && current != '\r' && current != '\n'
+                    && (current < 0x20 || current > 0x7E)) {
+                return i == 0 && current == 0xEF;
+            }
+        }
+        return true;
     }
 
     private static boolean containsHlsDirective(String text) {
@@ -349,9 +350,18 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                 .filter(line -> !line.isEmpty() && !line.startsWith("#"))
                 .findFirst()
                 .orElse("");
-        return first.startsWith("http://") || first.startsWith("https://")
-                || first.startsWith("//") || first.startsWith("/")
-                || first.startsWith("./") || first.startsWith("../") || first.startsWith("?");
+        if (first.startsWith("<")) {
+            return false;
+        }
+        try {
+            URI candidate = URI.create(first);
+            return candidate.isAbsolute()
+                    || candidate.getRawAuthority() != null
+                    || candidate.getRawQuery() != null
+                    || candidate.getRawPath() != null && !candidate.getRawPath().isEmpty();
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     private static boolean hasAdtsSignature(byte[] bytes) {
