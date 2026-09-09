@@ -30,7 +30,7 @@ import java.util.concurrent.FutureTask;
 /**
  * A single-request HTTP transport with explicit redirects and connection ownership.
  */
-public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTransport {
+public final class RadioHttpTransportImpl implements RadioHttpTransport {
 
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
     public static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(15);
@@ -48,7 +48,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
     private final ConnectionFactory connectionFactory;
     private final Authenticator proxyAuthenticator;
 
-    public HttpUrlConnectionRadioHttpTransport(Proxy proxy, RadioNetworkPolicy networkPolicy,
+    public RadioHttpTransportImpl(Proxy proxy, RadioNetworkPolicy networkPolicy,
                                                Duration connectTimeout, Duration readTimeout,
                                                int maxRedirects) {
         this(proxy, networkPolicy, connectTimeout, readTimeout, maxRedirects,
@@ -61,7 +61,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
                 });
     }
 
-    HttpUrlConnectionRadioHttpTransport(Proxy proxy, RadioNetworkPolicy networkPolicy,
+    RadioHttpTransportImpl(Proxy proxy, RadioNetworkPolicy networkPolicy,
                                         Duration connectTimeout, Duration readTimeout,
                                         int maxRedirects, ConnectionFactory connectionFactory) {
         this.proxy = Objects.requireNonNull(proxy, "proxy");
@@ -91,7 +91,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
         try {
             while (true) {
                 cancellation.throwIfCancelled();
-                this.networkPolicy.check(current);
+                this.networkPolicy.check(current, cancellation);
                 cancellation.throwIfCancelled();
                 if (!visited.add(current)) {
                     throw failure(RadioFailure.Code.TOO_MANY_REDIRECTS, false,
@@ -114,7 +114,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
                             "The radio host returned an invalid HTTP response", null);
                 }
                 if (isRedirect(statusCode)) {
-                    if (redirects >= this.maxRedirects) {
+                    if (redirects >= Math.min(this.maxRedirects, request.maxRedirects())) {
                         throw failure(RadioFailure.Code.TOO_MANY_REDIRECTS, false,
                                 "Radio request exceeded the redirect limit", null);
                     }
@@ -130,11 +130,16 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
                     throw new CancellationException("Radio request was cancelled");
                 }
                 RadioHttpResponse response = new RadioHttpResponse(
-                        current, statusCode, headers, body, cancellation, exchange);
+                        current, statusCode, headers, body, redirects, cancellation, exchange);
                 cancellation.throwIfCancelled();
                 transferred = true;
                 return response;
             }
+        } catch (RadioTransportException exception) {
+            throw exception.withRedirectCount(redirects);
+        } catch (RuntimeException exception) {
+            cancellation.throwIfCancelled();
+            throw exception;
         } finally {
             if (!transferred) {
                 exchange.closeTerminal();
