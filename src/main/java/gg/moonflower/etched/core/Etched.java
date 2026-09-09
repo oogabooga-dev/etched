@@ -60,6 +60,8 @@ public class Etched {
         bus.addListener(Etched::init);
         bus.addListener(Etched::clientInit);
 
+        ModLoadingContext.get().registerDisplayTest(EtchedCompatibility.displayTest());
+
         EtchedBlocks.BLOCKS.register(bus);
         EtchedBlocks.BLOCK_ENTITIES.register(bus);
 
