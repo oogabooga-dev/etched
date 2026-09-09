@@ -13,12 +13,14 @@ public final class RadioTransportException extends IOException {
 
     private final RadioFailure.Code code;
     private final boolean recoverable;
+    private final int redirectCount;
 
     public RadioTransportException(RadioFailure.Code code, boolean recoverable, String message,
                                    @Nullable Throwable cause) {
         super(message, cause);
         this.code = Objects.requireNonNull(code, "code");
         this.recoverable = recoverable;
+        this.redirectCount = 0;
     }
 
     public RadioFailure.Code code() {
@@ -29,7 +31,27 @@ public final class RadioTransportException extends IOException {
         return this.recoverable;
     }
 
+    public int redirectCount() {
+        return this.redirectCount;
+    }
+
+    RadioTransportException withRedirectCount(int redirectCount) {
+        if (redirectCount == this.redirectCount) {
+            return this;
+        }
+        return new RadioTransportException(this.code, this.recoverable, this.getMessage(),
+                this.getCause(), redirectCount);
+    }
+
     public RadioFailure toFailure() {
         return new RadioFailure(this.code, this.recoverable, this.getMessage(), this);
+    }
+
+    private RadioTransportException(RadioFailure.Code code, boolean recoverable, String message,
+                                    @Nullable Throwable cause, int redirectCount) {
+        super(message, cause);
+        this.code = Objects.requireNonNull(code, "code");
+        this.recoverable = recoverable;
+        this.redirectCount = redirectCount;
     }
 }

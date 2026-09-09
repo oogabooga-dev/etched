@@ -114,7 +114,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
                             "The radio host returned an invalid HTTP response", null);
                 }
                 if (isRedirect(statusCode)) {
-                    if (redirects >= this.maxRedirects) {
+                    if (redirects >= Math.min(this.maxRedirects, request.maxRedirects())) {
                         throw failure(RadioFailure.Code.TOO_MANY_REDIRECTS, false,
                                 "Radio request exceeded the redirect limit", null);
                     }
@@ -130,11 +130,13 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
                     throw new CancellationException("Radio request was cancelled");
                 }
                 RadioHttpResponse response = new RadioHttpResponse(
-                        current, statusCode, headers, body, cancellation, exchange);
+                        current, statusCode, headers, body, redirects, cancellation, exchange);
                 cancellation.throwIfCancelled();
                 transferred = true;
                 return response;
             }
+        } catch (RadioTransportException exception) {
+            throw exception.withRedirectCount(redirects);
         } finally {
             if (!transferred) {
                 exchange.closeTerminal();

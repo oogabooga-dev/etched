@@ -10,28 +10,28 @@ import java.net.URI;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-final class TestHttpServer implements AutoCloseable {
+public final class TestHttpServer implements AutoCloseable {
 
     private final HttpServer server;
     private final ExecutorService executor;
 
-    TestHttpServer() throws IOException {
+    public TestHttpServer() throws IOException {
         this.server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         this.executor = Executors.newCachedThreadPool();
         this.server.setExecutor(this.executor);
         this.server.start();
     }
 
-    void handle(String path, HttpHandler handler) {
+    public void handle(String path, HttpHandler handler) {
         this.server.createContext(path, handler);
     }
 
-    URI uri(String path) {
+    public URI uri(String path) {
         return URI.create("http://" + this.server.getAddress().getHostString() + ":"
                 + this.server.getAddress().getPort() + path);
     }
 
-    InetSocketAddress address() {
+    public InetSocketAddress address() {
         return this.server.getAddress();
     }
 

@@ -23,16 +23,18 @@ public final class RadioHttpResponse implements AutoCloseable {
     private final int statusCode;
     private final Map<String, List<String>> headers;
     private final OptionalLong contentLength;
+    private final int redirectCount;
     private final InputStream body;
     private final HttpUrlConnectionRadioHttpTransport.ActiveExchange exchange;
 
     RadioHttpResponse(URI uri, int statusCode, Map<String, List<String>> headers, InputStream rawBody,
-                      RadioCancellation cancellation,
+                      int redirectCount, RadioCancellation cancellation,
                       HttpUrlConnectionRadioHttpTransport.ActiveExchange exchange) {
         this.uri = Objects.requireNonNull(uri, "uri");
         this.statusCode = statusCode;
         this.headers = Objects.requireNonNull(headers, "headers");
         this.contentLength = parseContentLength(headers.get("content-length"));
+        this.redirectCount = redirectCount;
         this.exchange = Objects.requireNonNull(exchange, "exchange");
         this.body = new ManagedBody(Objects.requireNonNull(rawBody, "rawBody"), cancellation);
     }
@@ -56,6 +58,10 @@ public final class RadioHttpResponse implements AutoCloseable {
 
     public OptionalLong contentLength() {
         return this.contentLength;
+    }
+
+    public int redirectCount() {
+        return this.redirectCount;
     }
 
     public InputStream body() {
