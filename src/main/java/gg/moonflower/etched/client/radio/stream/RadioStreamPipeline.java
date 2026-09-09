@@ -1,0 +1,162 @@
+package gg.moonflower.etched.client.radio.stream;
+
+import gg.moonflower.etched.client.radio.RadioCancellation;
+import gg.moonflower.etched.client.radio.source.RadioResolvedSource;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CompletionStage;
+
+/** Builds one decoder from one independently owned resolved radio response. */
+public final class RadioStreamPipeline {
+
+    private RadioStreamPipeline() {
+    }
+
+    public static Preparation prepare(RadioResolvedSource source, RadioCancellation cancellation,
+                                      ExecutorService producerExecutor,
+                                      ExecutorService decoderExecutor, boolean forceStereo) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(cancellation, "cancellation");
+        Objects.requireNonNull(producerExecutor, "producerExecutor");
+        Objects.requireNonNull(decoderExecutor, "decoderExecutor");
+        if (producerExecutor == decoderExecutor) {
+            throw new IllegalArgumentException("Producer and decoder executors must be distinct");
+        }
+
+        RadioBufferedInputStream buffer;
+        try {
+            buffer = new RadioBufferedInputStream(audioBody(source), cancellation, producerExecutor);
+        } catch (RuntimeException exception) {
+            source.close();
+            throw exception;
+        }
+
+        CompletableFuture<RadioAudioStream> stream = buffer.startup().toCompletableFuture()
+                .thenApplyAsync(startup -> {
+                    cancellation.throwIfCancelled();
+                    if (startup == RadioBufferedInputStream.Startup.EMPTY_EOF) {
+                        throw new CompletionException(new IOException("Radio stream ended before audio data arrived"));
+                    }
+                    RadioAudioStream decoded = null;
+                    try {
+                        decoded = switch (source.format()) {
+                            case MP3 -> new RadioMp3AudioStream(buffer);
+                            case OGG -> new RadioOggAudioStream(buffer);
+                        };
+                        cancellation.throwIfCancelled();
+                        return forceStereo ? decoded : new RadioMonoAudioStream(decoded);
+                    } catch (IOException | RuntimeException exception) {
+                        if (decoded != null) {
+                            try {
+                                decoded.close();
+                            } catch (IOException closeException) {
+                                exception.addSuppressed(closeException);
+                            }
+                        } else {
+                            buffer.close();
+                        }
+                        throw new CompletionException(exception);
+                    }
+                }, decoderExecutor);
+        return new Preparation(buffer, stream);
+    }
+
+    private static InputStream audioBody(RadioResolvedSource source) {
+        String value = source.headers().entrySet().stream()
+                .filter(entry -> entry.getKey() != null && entry.getKey().equalsIgnoreCase("icy-metaint"))
+                .flatMap(entry -> entry.getValue().stream())
+                .findFirst()
+                .orElse(null);
+        if (value == null) {
+            return source.body();
+        }
+        try {
+            int interval = Integer.parseInt(value.trim());
+            return interval > 0 ? new IcyInputStream(source.body(), interval) : source.body();
+        } catch (NumberFormatException ignored) {
+            return source.body();
+        }
+    }
+
+    public static final class Preparation implements AutoCloseable {
+
+        private final RadioBufferedInputStream buffer;
+        private final CompletableFuture<RadioAudioStream> stream;
+        private boolean closed;
+        private boolean transferred;
+
+        private Preparation(RadioBufferedInputStream buffer,
+                            CompletableFuture<RadioAudioStream> stream) {
+            this.buffer = buffer;
+            this.stream = stream;
+            stream.whenComplete((audio, failure) -> {
+                if (failure != null) {
+                    this.buffer.close();
+                    return;
+                }
+                synchronized (this) {
+                    if (!this.closed || this.transferred || audio == null) {
+                        return;
+                    }
+                }
+                closeQuietly(audio);
+            });
+        }
+
+        public int bufferedBytes() {
+            return this.buffer.bufferedBytes();
+        }
+
+        public RadioBufferedInputStream.State bufferState() {
+            return this.buffer.state();
+        }
+
+        public CompletionStage<RadioAudioStream> stream() {
+            return this.stream.minimalCompletionStage();
+        }
+
+        public synchronized boolean transfer(RadioAudioStream audio) {
+            Objects.requireNonNull(audio, "audio");
+            if (this.closed || this.transferred || !this.stream.isDone()
+                    || this.stream.isCompletedExceptionally() || this.stream.join() != audio) {
+                return false;
+            }
+            this.transferred = true;
+            return true;
+        }
+
+        @Override
+        public void close() {
+            RadioAudioStream audio = null;
+            boolean closeBuffer;
+            synchronized (this) {
+                if (this.closed) {
+                    return;
+                }
+                this.closed = true;
+                closeBuffer = !this.transferred;
+                if (!this.transferred && this.stream.isDone() && !this.stream.isCompletedExceptionally()) {
+                    audio = this.stream.join();
+                }
+            }
+            if (closeBuffer) {
+                this.buffer.close();
+            }
+            if (audio != null) {
+                closeQuietly(audio);
+            }
+        }
+
+        private static void closeQuietly(RadioAudioStream stream) {
+            try {
+                stream.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+}
