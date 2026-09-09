@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class HttpUrlConnectionRadioHttpTransportTest {
+class RadioHttpTransportImplTest {
 
     private static final Duration TEST_TIMEOUT = Duration.ofSeconds(2);
     private static final RadioNetworkPolicy ALLOW_TEST_SERVER = uri -> {
@@ -69,8 +69,8 @@ class HttpUrlConnectionRadioHttpTransportTest {
             Headers headers = requestHeaders.get();
             assertEquals(1, requests.get());
             assertEquals("GET", requestMethod.get());
-            assertEquals(HttpUrlConnectionRadioHttpTransport.USER_AGENT, headers.getFirst("User-Agent"));
-            assertEquals(HttpUrlConnectionRadioHttpTransport.ACCEPT, headers.getFirst("Accept"));
+            assertEquals(RadioHttpTransportImpl.USER_AGENT, headers.getFirst("User-Agent"));
+            assertEquals(RadioHttpTransportImpl.ACCEPT, headers.getFirst("Accept"));
             assertEquals("1", headers.getFirst("Icy-MetaData"));
             assertFalse(headers.containsKey("X-Minecraft-Username"));
             assertFalse(headers.containsKey("X-Minecraft-UUID"));
@@ -223,7 +223,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 exchange.close();
             });
             Proxy proxy = new Proxy(Proxy.Type.HTTP, proxyServer.address());
-            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                     proxy, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0);
 
             try (RadioHttpResponse response = transport.execute(
@@ -257,7 +257,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 exchange.sendResponseHeaders(200, 0);
                 exchange.close();
             });
-            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                     Proxy.NO_PROXY, checked::add, TEST_TIMEOUT, TEST_TIMEOUT, 5);
 
             try (RadioHttpResponse response = transport.execute(
@@ -308,7 +308,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
             RadioTransportException loop = assertThrows(RadioTransportException.class,
                     () -> transport().execute(RadioHttpRequest.audio(server.uri("/loop-a")),
                             attempt().cancellation()));
-            HttpUrlConnectionRadioHttpTransport oneRedirect = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl oneRedirect = new RadioHttpTransportImpl(
                     Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 1);
             RadioTransportException limit = assertThrows(RadioTransportException.class,
                     () -> oneRedirect.execute(RadioHttpRequest.audio(server.uri("/one")),
@@ -326,7 +326,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
         try (TestHttpServer server = new TestHttpServer()) {
             server.handle("/redirect", exchange ->
                     redirect(exchange, "http://169.254.169.254/latest/meta-data"));
-            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                     Proxy.NO_PROXY, new DefaultRadioNetworkPolicy(() -> true),
                     TEST_TIMEOUT, TEST_TIMEOUT, 5);
 
@@ -409,7 +409,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 await(releaseBody);
                 exchange.close();
             });
-            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                     Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, Duration.ofMillis(100), 5);
 
             try {
@@ -476,7 +476,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
             policyStarted.countDown();
             await(releasePolicy);
         };
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, policy, TEST_TIMEOUT, TEST_TIMEOUT, 0,
                 (uri, proxy) -> {
                     connections.incrementAndGet();
@@ -525,7 +525,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 disconnected.countDown();
             }
         };
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
                 (uri, proxy) -> connection);
         RadioSession session = new RadioSession();
@@ -561,7 +561,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 };
             }
         };
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
                 (uri, proxy) -> connection);
 
@@ -597,7 +597,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 disconnected.countDown();
             }
         };
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
                 (uri, proxy) -> connection);
         RadioSession session = new RadioSession();
@@ -664,7 +664,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
         AtomicReference<Proxy> usedProxy = new AtomicReference<>();
         AtomicReference<URI> openedUri = new AtomicReference<>();
         TrackingConnection connection = new TrackingConnection();
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 proxy, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
                 (uri, suppliedProxy) -> {
                     openedUri.set(uri);
@@ -697,7 +697,7 @@ class HttpUrlConnectionRadioHttpTransportTest {
                 throw new java.net.SocketTimeoutException("connect timeout");
             }
         };
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
                 (uri, proxy) -> connection);
 
@@ -711,16 +711,16 @@ class HttpUrlConnectionRadioHttpTransportTest {
 
     @Test
     void validatesTimeoutAndRedirectConfiguration() {
-        assertThrows(IllegalArgumentException.class, () -> new HttpUrlConnectionRadioHttpTransport(
+        assertThrows(IllegalArgumentException.class, () -> new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, Duration.ZERO, TEST_TIMEOUT, 5));
-        assertThrows(IllegalArgumentException.class, () -> new HttpUrlConnectionRadioHttpTransport(
+        assertThrows(IllegalArgumentException.class, () -> new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, Duration.ofNanos(1), 5));
-        assertThrows(IllegalArgumentException.class, () -> new HttpUrlConnectionRadioHttpTransport(
+        assertThrows(IllegalArgumentException.class, () -> new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, -1));
     }
 
-    private static HttpUrlConnectionRadioHttpTransport transport() {
-        return new HttpUrlConnectionRadioHttpTransport(
+    private static RadioHttpTransportImpl transport() {
+        return new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 5);
     }
 

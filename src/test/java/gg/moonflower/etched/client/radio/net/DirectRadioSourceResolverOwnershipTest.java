@@ -38,7 +38,7 @@ class DirectRadioSourceResolverOwnershipTest {
                 firstUri + "\n" + secondUri + "\n");
         TrackingConnection first = connection(503, "text/plain", "unavailable");
         TrackingConnection second = connection(200, "audio/mpeg", "ID3-audio");
-        HttpUrlConnectionRadioHttpTransport transport = transport((uri, proxy) -> {
+        RadioHttpTransportImpl transport = transport((uri, proxy) -> {
             if (uri.equals(playlistUri)) {
                 return playlist;
             }
@@ -67,7 +67,7 @@ class DirectRadioSourceResolverOwnershipTest {
     void closesTheResponseWhenPlaylistParsingFails() throws Exception {
         URI playlistUri = URI.create("http://radio.example/stations.m3u");
         TrackingConnection playlist = connection(200, "audio/x-mpegurl", "file:///etc/passwd\n");
-        HttpUrlConnectionRadioHttpTransport transport = transport((uri, proxy) -> playlist);
+        RadioHttpTransportImpl transport = transport((uri, proxy) -> playlist);
 
         assertThrows(RadioSourceException.class,
                 () -> new DirectRadioSourceResolver().resolve(playlistUri, context(transport)));
@@ -81,9 +81,9 @@ class DirectRadioSourceResolverOwnershipTest {
                 new RadioResolveLimits(16, 1024, 10, 256, 2, 20));
     }
 
-    private static HttpUrlConnectionRadioHttpTransport transport(
-            HttpUrlConnectionRadioHttpTransport.ConnectionFactory factory) {
-        return new HttpUrlConnectionRadioHttpTransport(
+    private static RadioHttpTransportImpl transport(
+            RadioHttpTransportImpl.ConnectionFactory factory) {
+        return new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, ALLOW_ALL, Duration.ofSeconds(1), Duration.ofSeconds(1), 2, factory);
     }
 

@@ -30,7 +30,7 @@ import java.util.concurrent.FutureTask;
 /**
  * A single-request HTTP transport with explicit redirects and connection ownership.
  */
-public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTransport {
+public final class RadioHttpTransportImpl implements RadioHttpTransport {
 
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
     public static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(15);
@@ -48,7 +48,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
     private final ConnectionFactory connectionFactory;
     private final Authenticator proxyAuthenticator;
 
-    public HttpUrlConnectionRadioHttpTransport(Proxy proxy, RadioNetworkPolicy networkPolicy,
+    public RadioHttpTransportImpl(Proxy proxy, RadioNetworkPolicy networkPolicy,
                                                Duration connectTimeout, Duration readTimeout,
                                                int maxRedirects) {
         this(proxy, networkPolicy, connectTimeout, readTimeout, maxRedirects,
@@ -61,7 +61,7 @@ public final class HttpUrlConnectionRadioHttpTransport implements RadioHttpTrans
                 });
     }
 
-    HttpUrlConnectionRadioHttpTransport(Proxy proxy, RadioNetworkPolicy networkPolicy,
+    RadioHttpTransportImpl(Proxy proxy, RadioNetworkPolicy networkPolicy,
                                         Duration connectTimeout, Duration readTimeout,
                                         int maxRedirects, ConnectionFactory connectionFactory) {
         this.proxy = Objects.requireNonNull(proxy, "proxy");

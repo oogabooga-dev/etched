@@ -3,7 +3,7 @@ package gg.moonflower.etched.client.radio.source;
 import com.sun.net.httpserver.Headers;
 import gg.moonflower.etched.client.radio.RadioFailure;
 import gg.moonflower.etched.client.radio.RadioSession;
-import gg.moonflower.etched.client.radio.net.HttpUrlConnectionRadioHttpTransport;
+import gg.moonflower.etched.client.radio.net.RadioHttpTransportImpl;
 import gg.moonflower.etched.client.radio.net.RadioNetworkPolicy;
 import gg.moonflower.etched.client.radio.net.RadioTransportException;
 import gg.moonflower.etched.client.radio.net.TestHttpServer;
@@ -127,7 +127,7 @@ class DirectRadioSourceResolverTest {
                 respond(exchange, 200, bytes("ID3-stream-" + request));
             });
             DirectRadioSourceResolver resolver = resolver();
-            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                     Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 5);
             RadioSession firstSession = new RadioSession();
             RadioSession secondSession = new RadioSession();
@@ -518,7 +518,7 @@ class DirectRadioSourceResolverTest {
                 await(release);
                 exchange.close();
             });
-            HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+            RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                     Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 5);
             RadioResolveContext context = new RadioResolveContext(
                     transport, ALLOW_TEST_SERVER, attempt.cancellation(), limits());
@@ -551,7 +551,7 @@ class DirectRadioSourceResolverTest {
     }
 
     private static RadioResolveContext context(RadioNetworkPolicy policy, RadioResolveLimits limits) {
-        HttpUrlConnectionRadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
                 Proxy.NO_PROXY, policy, TEST_TIMEOUT, TEST_TIMEOUT, 5);
         return new RadioResolveContext(transport, policy,
                 new RadioSession().start("http://radio.example/live").cancellation(), limits);

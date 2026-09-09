@@ -25,11 +25,11 @@ public final class RadioHttpResponse implements AutoCloseable {
     private final OptionalLong contentLength;
     private final int redirectCount;
     private final InputStream body;
-    private final HttpUrlConnectionRadioHttpTransport.ActiveExchange exchange;
+    private final RadioHttpTransportImpl.ActiveExchange exchange;
 
     RadioHttpResponse(URI uri, int statusCode, Map<String, List<String>> headers, InputStream rawBody,
                       int redirectCount, RadioCancellation cancellation,
-                      HttpUrlConnectionRadioHttpTransport.ActiveExchange exchange) {
+                      RadioHttpTransportImpl.ActiveExchange exchange) {
         this.uri = Objects.requireNonNull(uri, "uri");
         this.statusCode = statusCode;
         this.headers = Objects.requireNonNull(headers, "headers");

@@ -20,12 +20,12 @@ public final class RadioHttpTransportFactory {
     public static Components createDefaultComponents() {
         RadioNetworkPolicy networkPolicy = new DefaultRadioNetworkPolicy(
                 Etched.CLIENT_CONFIG.allowPrivateNetworkStations::get);
-        RadioHttpTransport transport = new HttpUrlConnectionRadioHttpTransport(
+        RadioHttpTransport transport = new RadioHttpTransportImpl(
                 Minecraft.getInstance().getProxy(),
                 networkPolicy,
-                HttpUrlConnectionRadioHttpTransport.DEFAULT_CONNECT_TIMEOUT,
-                HttpUrlConnectionRadioHttpTransport.DEFAULT_READ_TIMEOUT,
-                HttpUrlConnectionRadioHttpTransport.DEFAULT_MAX_REDIRECTS);
+                RadioHttpTransportImpl.DEFAULT_CONNECT_TIMEOUT,
+                RadioHttpTransportImpl.DEFAULT_READ_TIMEOUT,
+                RadioHttpTransportImpl.DEFAULT_MAX_REDIRECTS);
         return new Components(transport, networkPolicy);
     }
 
