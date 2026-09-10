@@ -34,6 +34,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -248,7 +249,8 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         RadioResolvedSource source = null;
         try {
             active.attempt.cancellation().throwIfCancelled();
-            RadioResolveContext trackContext = this.contexts.create(active.attempt.cancellation());
+            track.cancellation.throwIfCancelled();
+            RadioResolveContext trackContext = this.contexts.create(track.cancellation);
             source = active.program.openTrack(track.index, trackContext);
             RadioStreamPipeline.Preparation preparation;
             synchronized (this.lock) {
@@ -257,7 +259,7 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
                     return;
                 }
                 track.source = source;
-                preparation = RadioStreamPipeline.prepare(source, active.attempt.cancellation(),
+                preparation = RadioStreamPipeline.prepare(source, track.cancellation,
                         this.producerExecutor, this.decoderExecutor, this.forceStereo.getAsBoolean(),
                         title -> active.session.offerStreamTitle(active.attempt, title));
                 track.source = null;
@@ -470,6 +472,10 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
     }
 
     private void closeAttempt(ActiveAttempt active, boolean preserveServiceCursor) {
+        this.closeAttempt(active, preserveServiceCursor, true);
+    }
+
+    private void closeAttempt(ActiveAttempt active, boolean preserveServiceCursor, boolean stopSound) {
         TrackPlayback track;
         Future<?> worker;
         synchronized (this.lock) {
@@ -489,10 +495,14 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         if (worker != null) {
             cancel(this.resolverExecutor, worker);
         }
-        this.closeTrack(active, track);
+        this.closeTrack(active, track, stopSound);
     }
 
     private void closeTrack(ActiveAttempt active, TrackPlayback track) {
+        this.closeTrack(active, track, true);
+    }
+
+    private void closeTrack(ActiveAttempt active, TrackPlayback track, boolean stopSound) {
         if (track == null) {
             return;
         }
@@ -522,16 +532,28 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         if (worker != null) {
             cancel(this.resolverExecutor, worker);
         }
+        if (!transferred) {
+            track.cancellation.cancel();
+        }
+        boolean soundOutputOwnsAudio = false;
         if (sound != null) {
             sound.requestStop();
-            try {
-                this.sounds.stop(sound);
-            } catch (RuntimeException ignored) {
+            if (stopSound) {
+                synchronized (active) {
+                    if (active.soundOutputAvailable) {
+                        try {
+                            this.sounds.stop(sound);
+                            soundOutputOwnsAudio = transferred;
+                        } catch (RuntimeException ignored) {
+                        }
+                    }
+                }
             }
         }
         if (preparation != null) {
             preparation.close();
-        } else if (transferred && audio != null) {
+        } else if (transferred && audio != null && !soundOutputOwnsAudio) {
+            track.cancellation.cancel();
             closeQuietly(audio);
         }
         if (source != null) {
@@ -540,14 +562,21 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
     }
 
     private void dispatch(Runnable action, ActiveAttempt active) {
+        AtomicBoolean actionStarted = new AtomicBoolean();
         try {
-            this.ownerExecutor.execute(action);
+            this.ownerExecutor.execute(() -> {
+                actionStarted.set(true);
+                action.run();
+            });
         } catch (RuntimeException exception) {
-            try {
-                active.events.ownerUnavailable(exception);
-            } finally {
-                this.closeAttempt(active, false);
+            if (actionStarted.get()) {
+                throw exception;
             }
+            synchronized (active) {
+                active.soundOutputAvailable = false;
+            }
+            this.closeAttempt(active, false, false);
+            active.events.ownerUnavailable(exception);
         }
     }
 
@@ -649,6 +678,7 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         private RadioSourceProgram program;
         private TrackPlayback track;
         private boolean closed;
+        private boolean soundOutputAvailable = true;
 
         private ActiveAttempt(RadioKey key, RadioSession session, RadioSession.Attempt attempt,
                               RadioPlaybackManager.SessionEvents events, RadioResolveContext context) {
@@ -662,6 +692,7 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
 
     private static final class TrackPlayback {
         private final int index;
+        private final RadioCancellation cancellation = new RadioCancellation();
         private Future<?> worker;
         private RadioResolvedSource source;
         private RadioStreamPipeline.Preparation preparation;

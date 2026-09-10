@@ -9,8 +9,11 @@ import java.io.InputStream;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Consumer;
 
 /** Builds one decoder from one independently owned resolved radio response. */
@@ -47,37 +50,95 @@ public final class RadioStreamPipeline {
             throw exception;
         }
 
-        CompletableFuture<RadioAudioStream> stream = buffer.startup().toCompletableFuture()
-                .thenApplyAsync(startup -> {
-                    cancellation.throwIfCancelled();
-                    if (startup == RadioBufferedInputStream.Startup.EMPTY_EOF) {
-                        throw new CompletionException(new RadioStreamException(
-                                RadioFailure.Code.UNEXPECTED_EOF, true,
-                                "Radio stream ended before audio data arrived", null));
-                    }
-                    RadioAudioStream decoded = null;
-                    try {
-                        InputStream audioBody = audioBody(source, buffer, streamTitleListener);
-                        decoded = switch (source.format()) {
-                            case MP3 -> new RadioMp3AudioStream(audioBody);
-                            case OGG -> new RadioOggAudioStream(audioBody);
-                        };
-                        cancellation.throwIfCancelled();
-                        return forceStereo ? decoded : new RadioMonoAudioStream(decoded);
-                    } catch (IOException | RuntimeException exception) {
-                        if (decoded != null) {
-                            try {
-                                decoded.close();
-                            } catch (IOException closeException) {
-                                exception.addSuppressed(closeException);
-                            }
-                        } else {
-                            buffer.close();
-                        }
-                        throw new CompletionException(exception);
-                    }
-                }, decoderExecutor);
-        return new Preparation(buffer, stream);
+        CompletableFuture<RadioAudioStream> stream = new CompletableFuture<>();
+        FutureTask<Void> decoderTask = new FutureTask<>(() -> {
+            RadioAudioStream audio = null;
+            try {
+                audio = decode(source, buffer, cancellation, forceStereo, streamTitleListener);
+                if (!stream.complete(audio)) {
+                    closeQuietly(audio);
+                }
+            } catch (Throwable failure) {
+                buffer.close();
+                stream.completeExceptionally(failure);
+            }
+            return null;
+        });
+        Preparation preparation = new Preparation(buffer, stream, decoderExecutor, decoderTask);
+        buffer.startup().whenComplete((startup, failure) -> {
+            if (failure != null) {
+                buffer.close();
+                stream.completeExceptionally(failure);
+                return;
+            }
+            if (startup == RadioBufferedInputStream.Startup.EMPTY_EOF) {
+                buffer.close();
+                stream.completeExceptionally(new RadioStreamException(
+                        RadioFailure.Code.UNEXPECTED_EOF, true,
+                        "Radio stream ended before audio data arrived", null));
+                return;
+            }
+            if (stream.isDone()) {
+                return;
+            }
+            try {
+                decoderExecutor.execute(decoderTask);
+            } catch (RuntimeException exception) {
+                buffer.close();
+                stream.completeExceptionally(exception);
+            } finally {
+                if (decoderTask.isCancelled()) {
+                    remove(decoderExecutor, decoderTask);
+                }
+            }
+        });
+        return preparation;
+    }
+
+    private static RadioAudioStream decode(RadioResolvedSource source, RadioBufferedInputStream buffer,
+                                           RadioCancellation cancellation, boolean forceStereo,
+                                           Consumer<String> streamTitleListener) {
+        cancellation.throwIfCancelled();
+        RadioAudioStream decoded = null;
+        try {
+            InputStream audioBody = audioBody(source, buffer, streamTitleListener);
+            decoded = switch (source.format()) {
+                case MP3 -> new RadioMp3AudioStream(audioBody);
+                case OGG -> new RadioOggAudioStream(audioBody);
+            };
+            cancellation.throwIfCancelled();
+            return forceStereo ? decoded : new RadioMonoAudioStream(decoded);
+        } catch (IOException | RuntimeException exception) {
+            if (decoded != null) {
+                try {
+                    decoded.close();
+                } catch (IOException closeException) {
+                    exception.addSuppressed(closeException);
+                }
+            } else {
+                buffer.close();
+            }
+            throw new CompletionException(exception);
+        }
+    }
+
+    private static void cancel(ExecutorService executor, Future<?> future) {
+        future.cancel(true);
+        remove(executor, future);
+    }
+
+    private static void remove(ExecutorService executor, Future<?> future) {
+        if (executor instanceof ThreadPoolExecutor pool && future instanceof Runnable task) {
+            pool.remove(task);
+            pool.purge();
+        }
+    }
+
+    private static void closeQuietly(RadioAudioStream stream) {
+        try {
+            stream.close();
+        } catch (IOException ignored) {
+        }
     }
 
     private static InputStream audioBody(RadioResolvedSource source, InputStream body,
@@ -104,13 +165,18 @@ public final class RadioStreamPipeline {
 
         private final RadioBufferedInputStream buffer;
         private final CompletableFuture<RadioAudioStream> stream;
+        private final ExecutorService decoderExecutor;
+        private final Future<?> decoderTask;
         private boolean closed;
         private boolean transferred;
 
         private Preparation(RadioBufferedInputStream buffer,
-                            CompletableFuture<RadioAudioStream> stream) {
+                            CompletableFuture<RadioAudioStream> stream,
+                            ExecutorService decoderExecutor, Future<?> decoderTask) {
             this.buffer = buffer;
             this.stream = stream;
+            this.decoderExecutor = decoderExecutor;
+            this.decoderTask = decoderTask;
             stream.whenComplete((audio, failure) -> {
                 if (failure != null) {
                     this.buffer.close();
@@ -162,6 +228,8 @@ public final class RadioStreamPipeline {
                 }
             }
             if (closeBuffer) {
+                stream.cancel(true);
+                cancel(this.decoderExecutor, this.decoderTask);
                 this.buffer.close();
             }
             if (audio != null) {
@@ -169,11 +237,5 @@ public final class RadioStreamPipeline {
             }
         }
 
-        private static void closeQuietly(RadioAudioStream stream) {
-            try {
-                stream.close();
-            } catch (IOException ignored) {
-            }
-        }
     }
 }
