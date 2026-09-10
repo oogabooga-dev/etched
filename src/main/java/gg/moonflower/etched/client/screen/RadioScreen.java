@@ -3,6 +3,7 @@ package gg.moonflower.etched.client.screen;
 import gg.moonflower.etched.common.menu.RadioMenu;
 import gg.moonflower.etched.common.network.EtchedMessages;
 import gg.moonflower.etched.common.network.play.ServerboundSetUrlPacket;
+import gg.moonflower.etched.common.radio.RadioUrlValidator;
 import gg.moonflower.etched.core.Etched;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -19,30 +20,47 @@ import net.minecraft.world.entity.player.Inventory;
 public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
 
     private static final ResourceLocation TEXTURE = new ResourceLocation(Etched.MOD_ID, "textures/gui/radio.png");
+    private static final Component LOADING_URL = Component.translatable("screen." + Etched.MOD_ID + ".radio.loading_url");
+    private static final Component INVALID_URL = Component.translatable("screen." + Etched.MOD_ID + ".radio.error.invalid_url");
+    private static final int BACKGROUND_HEIGHT = 39;
 
-    private boolean canEdit;
+    private final RadioEditState editState = new RadioEditState();
     private EditBox url;
+    private Button doneButton;
 
     public RadioScreen(RadioMenu menu, Inventory inventory, Component component) {
         super(menu, inventory, component);
-        this.imageHeight = 39;
+        this.imageHeight = 51;
     }
 
     @Override
     protected void init() {
         super.init();
-        this.url = new EditBox(this.font, this.leftPos + 10, this.topPos + 21, 154, 16, this.url, Component.translatable("container." + Etched.MOD_ID + ".radio.url"));
+        this.url = new EditBox(this.font, this.leftPos + 10, this.topPos + 21, 154, 16,
+                Component.translatable("container." + Etched.MOD_ID + ".radio.url"));
         this.url.setTextColor(-1);
         this.url.setTextColorUneditable(-1);
         this.url.setBordered(false);
-        this.url.setMaxLength(32500);
-        this.url.setVisible(this.canEdit);
+        this.url.setMaxLength(RadioUrlValidator.MAX_LENGTH);
+        this.url.setVisible(this.editState.loaded());
+        this.url.setEditable(this.editState.loaded());
         this.url.setCanLoseFocus(false);
+        this.url.setValue(this.editState.value());
+        this.url.setResponder(value -> {
+            this.editState.update(value);
+            this.updateDoneButton();
+        });
         this.addRenderableWidget(this.url);
-        this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, button -> {
-            EtchedMessages.PLAY.sendToServer(new ServerboundSetUrlPacket(this.url.getValue()));
-            this.minecraft.setScreen(null);
-        }).bounds((this.width - this.imageWidth) / 2, (this.height - this.imageHeight) / 2 + this.imageHeight + 5, this.imageWidth, 20).build());
+        this.doneButton = this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, button ->
+                        this.editState.submit().ifPresent(value -> {
+                            this.updateDoneButton();
+                            this.url.setEditable(false);
+                            EtchedMessages.PLAY.sendToServer(new ServerboundSetUrlPacket(value));
+                            this.onClose();
+                        }))
+                .bounds(this.leftPos, this.topPos + this.imageHeight + 5, this.imageWidth, 20)
+                .build());
+        this.updateDoneButton();
     }
 
     @Override
@@ -58,13 +76,18 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
 
     @Override
     protected void renderBg(GuiGraphics guiGraphics, float f, int mouseX, int mouseY) {
-        guiGraphics.blit(TEXTURE, this.leftPos, this.topPos, 0, 0, this.imageWidth, this.imageHeight);
-        guiGraphics.blit(TEXTURE, this.leftPos + 8, this.topPos + 18, 0, this.canEdit ? 39 : 53, 160, 14);
+        guiGraphics.blit(TEXTURE, this.leftPos, this.topPos, 0, 0, this.imageWidth, BACKGROUND_HEIGHT);
+        guiGraphics.blit(TEXTURE, this.leftPos + 8, this.topPos + 18, 0, this.editState.loaded() ? 39 : 53, 160, 14);
     }
 
     @Override
     protected void renderLabels(GuiGraphics guiGraphics, int mouseX, int mouseY) {
         guiGraphics.drawString(this.font, this.title, this.titleLabelX, this.titleLabelY, 4210752, false);
+        if (!this.editState.loaded()) {
+            guiGraphics.drawString(this.font, LOADING_URL, 8, 41, 8421504, false);
+        } else if (!this.editState.valid()) {
+            guiGraphics.drawString(this.font, INVALID_URL, 8, 41, 0xFF5555, false);
+        }
     }
 
     @Override
@@ -73,10 +96,20 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     }
 
     public void receiveUrl(String url) {
-        this.canEdit = true;
+        if (!this.editState.receiveInitialUrl(url)) {
+            return;
+        }
         this.url.setVisible(true);
-        this.url.setValue(url);
+        this.url.setEditable(true);
+        this.url.setValue(this.editState.value());
         this.setFocused(this.url);
         this.url.setFocused(true);
+        this.updateDoneButton();
+    }
+
+    private void updateDoneButton() {
+        if (this.doneButton != null) {
+            this.doneButton.active = this.editState.canSubmit();
+        }
     }
 }

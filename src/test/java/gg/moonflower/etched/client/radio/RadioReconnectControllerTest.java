@@ -249,7 +249,7 @@ class RadioReconnectControllerTest {
     }
 
     @Test
-    void soundStopWithoutDecoderOutcomeBecomesFatalAfterGracePeriod() {
+    void soundStopWithoutDecoderOutcomeSchedulesRecoveryAfterGracePeriod() {
         ManualScheduler scheduler = new ManualScheduler();
         RadioReconnectController controller = new RadioReconnectController(
                 NO_JITTER, () -> 0L, Runnable::run, scheduler);
@@ -264,8 +264,34 @@ class RadioReconnectControllerTest {
 
         scheduler.fireRaw(0);
 
-        assertEquals(RadioPlaybackState.FAILED, session.snapshot().state());
+        assertEquals(RadioPlaybackState.RECONNECT_WAIT, session.snapshot().state());
         assertEquals(RadioFailure.Code.SOUND_ENGINE_STOPPED, session.snapshot().failure().code());
+        assertTrue(session.snapshot().failure().recoverable());
+        assertEquals(1_000L, scheduler.tasks.get(1).delayMillis);
+    }
+
+    @Test
+    void sequenceAdvanceCancelsDeferredSoundStop() {
+        ManualScheduler scheduler = new ManualScheduler();
+        RadioReconnectController controller = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, scheduler);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("https://radio.example/album");
+        session.advance(attempt, RadioPlaybackState.CONNECTING, 0L);
+        session.advance(attempt, RadioPlaybackState.BUFFERING, 0L);
+        session.advance(attempt, RadioPlaybackState.PLAYING, 0L);
+        AtomicInteger advances = new AtomicInteger();
+
+        controller.soundEngineStopped(session, attempt, ignored -> {
+        }, () -> {
+        });
+        controller.sequenceAdvance(session, attempt, advances::incrementAndGet, () -> {
+        });
+        scheduler.fireRaw(0);
+
+        assertEquals(1, advances.get());
+        assertEquals(RadioPlaybackState.CONNECTING, session.snapshot().state());
+        assertTrue(scheduler.tasks.get(0).cancelled);
     }
 
     @Test

@@ -4,6 +4,8 @@ import gg.moonflower.etched.client.radio.stream.RadioAudioStream;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +25,8 @@ public final class RadioReconnectController implements AutoCloseable {
     private final RetryScheduler scheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Semaphore retryPermits;
+    private final ConcurrentMap<RadioSession.Attempt, TimerRegistration> pendingSoundStops =
+            new ConcurrentHashMap<>();
 
     public static RadioReconnectController createDefault(java.util.concurrent.Executor ownerExecutor) {
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -97,6 +101,19 @@ public final class RadioReconnectController implements AutoCloseable {
         this.execute(() -> this.deferSoundEngineStop(session, attempt, retryStarter, stateChanged));
     }
 
+    public void sequenceAdvance(RadioSession session, RadioSession.Attempt attempt,
+                                Runnable continuation, Runnable stateChanged) {
+        Objects.requireNonNull(continuation, "continuation");
+        Objects.requireNonNull(stateChanged, "stateChanged");
+        this.execute(() -> {
+            this.cancelPendingSoundStop(attempt);
+            if (session.advanceToNextTrack(attempt)) {
+                stateChanged.run();
+                continuation.run();
+            }
+        });
+    }
+
     private void handle(RadioSession session, RadioSession.Attempt attempt, Optional<RadioFailure> classified,
                         Consumer<RadioSession.Attempt> retryStarter, Runnable stateChanged) {
         Objects.requireNonNull(session, "session");
@@ -106,6 +123,7 @@ public final class RadioReconnectController implements AutoCloseable {
         if (classified.isEmpty() || attempt.cancellation().isCancelled()) {
             return;
         }
+        this.cancelPendingSoundStop(attempt);
         RadioFailure failure = classified.orElseThrow();
         if (!failure.recoverable()) {
             if (session.fail(attempt, failure)) {
@@ -157,20 +175,37 @@ public final class RadioReconnectController implements AutoCloseable {
         }
         TimerRegistration registration = new TimerRegistration(() -> {
         });
+        if (this.pendingSoundStops.putIfAbsent(attempt, registration) != null) {
+            return;
+        }
         try {
             registration.attach(this.scheduler.schedule(() -> {
-                if (registration.fire()) {
-                    this.execute(() -> this.handle(session, attempt,
-                            Optional.of(this.policy.soundEngineStopped()), retryStarter, stateChanged));
-                }
+                this.execute(() -> {
+                    if (this.pendingSoundStops.remove(attempt, registration) && registration.fire()) {
+                        this.handle(session, attempt, Optional.of(this.policy.soundEngineStopped()),
+                                retryStarter, stateChanged);
+                    }
+                });
             }, SOUND_STOP_GRACE_MILLIS));
         } catch (RuntimeException exception) {
+            this.pendingSoundStops.remove(attempt, registration);
             registration.cancel();
             this.handle(session, attempt, Optional.of(this.policy.soundEngineStopped()),
                     retryStarter, stateChanged);
             return;
         }
-        attempt.cancellation().onCancel(registration::cancel);
+        attempt.cancellation().onCancel(() -> {
+            if (this.pendingSoundStops.remove(attempt, registration)) {
+                registration.cancel();
+            }
+        });
+    }
+
+    private void cancelPendingSoundStop(RadioSession.Attempt attempt) {
+        TimerRegistration registration = this.pendingSoundStops.remove(attempt);
+        if (registration != null) {
+            registration.cancel();
+        }
     }
 
     private void retry(RadioSession session, RadioSession.ReconnectWait wait,
@@ -192,6 +227,8 @@ public final class RadioReconnectController implements AutoCloseable {
     @Override
     public void close() {
         if (this.closed.compareAndSet(false, true)) {
+            this.pendingSoundStops.values().forEach(TimerRegistration::cancel);
+            this.pendingSoundStops.clear();
             this.scheduler.close();
         }
     }

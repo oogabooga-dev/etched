@@ -20,7 +20,8 @@ final class MinecraftRadioPlaybackEffects implements RadioPlaybackEffects {
 
     @Override
     public void update(RadioKey key, RadioSession.Snapshot snapshot) {
-        if (snapshot.state() != RadioPlaybackState.PLAYING) {
+        Component message = RadioStatusMessages.forSnapshot(snapshot);
+        if (message == null) {
             this.stop(key);
             return;
         }
@@ -30,25 +31,31 @@ final class MinecraftRadioPlaybackEffects implements RadioPlaybackEffects {
             return;
         }
 
-        for (LivingEntity living : level.getEntitiesOfClass(
-                LivingEntity.class, new AABB(key.pos()).inflate(3.45))) {
-            living.setRecordPlayingNearby(key.pos(), true);
-        }
-
         ActiveEffect effect = this.active.computeIfAbsent(key, ignored -> new ActiveEffect());
-        if (!effect.initialized || !Objects.equals(effect.title, snapshot.streamTitle())) {
-            if (effect.overlay != null) {
-                GuiAccessor gui = (GuiAccessor) Minecraft.getInstance().gui;
-                if (gui.getOverlayMessageString() == effect.overlay) {
-                    gui.setOverlayMessageTime(0);
-                }
-                effect.overlay = null;
-            }
-            effect.initialized = true;
-            effect.title = snapshot.streamTitle();
+        boolean playing = snapshot.state() == RadioPlaybackState.PLAYING;
+        if (effect.playing && !playing) {
+            effect.playing = false;
+            this.setRecordPlayingNearby(level, key, false);
+            this.refreshActiveNearbyState();
+        }
+        RadioFailure.Code failureCode = snapshot.failure() == null ? null : snapshot.failure().code();
+        boolean messageChanged = effect.state != snapshot.state()
+                || snapshot.state() == RadioPlaybackState.PLAYING
+                && !Objects.equals(effect.streamTitle, snapshot.streamTitle())
+                || snapshot.state() == RadioPlaybackState.FAILED
+                && effect.failureCode != failureCode;
+        if (messageChanged) {
+            this.clearOverlay(effect);
+            effect.state = snapshot.state();
+            effect.failureCode = failureCode;
+            effect.streamTitle = snapshot.streamTitle();
         }
         if (effect.overlay == null) {
-            effect.overlay = this.showOverlay(key, snapshot.streamTitle());
+            effect.overlay = this.showOverlay(key, message, playing);
+        }
+        effect.playing = playing;
+        if (playing) {
+            this.setRecordPlayingNearby(level, key, true);
         }
     }
 
@@ -60,49 +67,57 @@ final class MinecraftRadioPlaybackEffects implements RadioPlaybackEffects {
         }
 
         ClientLevel level = getLevel(key);
-        if (level != null) {
-            for (LivingEntity living : level.getEntitiesOfClass(
-                    LivingEntity.class, new AABB(key.pos()).inflate(3.45))) {
-                living.setRecordPlayingNearby(key.pos(), false);
-            }
+        if (level != null && effect.playing) {
+            this.setRecordPlayingNearby(level, key, false);
         }
-        if (effect.overlay != null) {
-            GuiAccessor gui = (GuiAccessor) Minecraft.getInstance().gui;
-            if (gui.getOverlayMessageString() == effect.overlay) {
-                gui.setOverlayMessageTime(0);
-            }
-        }
+        this.clearOverlay(effect);
         this.refreshActiveNearbyState();
     }
 
     @Nullable
-    private Component showOverlay(RadioKey key, @Nullable String streamTitle) {
+    private Component showOverlay(RadioKey key, Component message, boolean playing) {
         Minecraft minecraft = Minecraft.getInstance();
         ClientLevel level = getLevel(key);
-        if (level == null || !level.getBlockState(key.pos().above()).isAir()
+        if (level == null || playing && !level.getBlockState(key.pos().above()).isAir()
                 || !PlayableRecord.canShowMessage(
                 key.pos().getX() + 0.5, key.pos().getY() + 0.5, key.pos().getZ() + 0.5)) {
             return null;
         }
 
-        Component overlay = streamTitle == null
-                ? Component.translatable("sound_source.etched.radio")
-                : Component.literal(streamTitle);
-        minecraft.gui.setOverlayMessage(overlay, true);
-        return overlay;
+        minecraft.gui.setOverlayMessage(message, true);
+        return message;
     }
 
     private void refreshActiveNearbyState() {
-        for (RadioKey activeKey : this.active.keySet()) {
+        for (Map.Entry<RadioKey, ActiveEffect> entry : this.active.entrySet()) {
+            if (!entry.getValue().playing) {
+                continue;
+            }
+            RadioKey activeKey = entry.getKey();
             ClientLevel level = getLevel(activeKey);
             if (level == null) {
                 continue;
             }
-            for (LivingEntity living : level.getEntitiesOfClass(
-                    LivingEntity.class, new AABB(activeKey.pos()).inflate(3.45))) {
-                living.setRecordPlayingNearby(activeKey.pos(), true);
-            }
+            this.setRecordPlayingNearby(level, activeKey, true);
         }
+    }
+
+    private void setRecordPlayingNearby(ClientLevel level, RadioKey key, boolean playing) {
+        for (LivingEntity living : level.getEntitiesOfClass(
+                LivingEntity.class, new AABB(key.pos()).inflate(3.45))) {
+            living.setRecordPlayingNearby(key.pos(), playing);
+        }
+    }
+
+    private void clearOverlay(ActiveEffect effect) {
+        if (effect.overlay == null) {
+            return;
+        }
+        GuiAccessor gui = (GuiAccessor) Minecraft.getInstance().gui;
+        if (gui.getOverlayMessageString() == effect.overlay) {
+            gui.setOverlayMessageTime(0);
+        }
+        effect.overlay = null;
     }
 
     @Nullable
@@ -113,8 +128,10 @@ final class MinecraftRadioPlaybackEffects implements RadioPlaybackEffects {
 
     private static final class ActiveEffect {
 
-        private boolean initialized;
-        private String title;
+        private boolean playing;
+        private RadioPlaybackState state;
+        private RadioFailure.Code failureCode;
+        private String streamTitle;
         private Component overlay;
     }
 }

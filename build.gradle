@@ -11,6 +11,16 @@ base {
 version = project.mod_version
 group = project.maven_group
 
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
 loom {
     accessWidenerPath = file("src/main/resources/${project.mod_id}.accesswidener")
 

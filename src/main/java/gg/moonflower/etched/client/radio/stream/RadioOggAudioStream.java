@@ -23,7 +23,7 @@ import org.lwjgl.system.MemoryUtil;
 /** Radio-local lifecycle wrapper around Minecraft's Vorbis decoder. */
 public final class RadioOggAudioStream extends AbstractRadioAudioStream {
 
-    private static final int MAX_PCM_READ = 32 * 1024;
+    private static final int MAX_PCM_READ = 1024 * 1024;
     private static final int MAX_INITIALIZATION_BYTES = 256 * 1024;
 
     private final OggAudioStream delegate;
@@ -50,7 +50,7 @@ public final class RadioOggAudioStream extends AbstractRadioAudioStream {
     }
 
     @Override
-    public ByteBuffer read(int requestedBytes) throws IOException {
+    public synchronized ByteBuffer read(int requestedBytes) throws IOException {
         if (this.closed.get()) {
             throw new IOException("Ogg decoder is closed");
         }
@@ -79,7 +79,7 @@ public final class RadioOggAudioStream extends AbstractRadioAudioStream {
     }
 
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         if (!this.closed.compareAndSet(false, true)) {
             return;
         }

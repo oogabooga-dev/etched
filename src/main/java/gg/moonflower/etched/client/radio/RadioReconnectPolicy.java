@@ -127,7 +127,7 @@ public final class RadioReconnectPolicy {
     }
 
     public RadioFailure soundEngineStopped() {
-        return RadioFailure.fatal(RadioFailure.Code.SOUND_ENGINE_STOPPED,
+        return RadioFailure.recoverable(RadioFailure.Code.SOUND_ENGINE_STOPPED,
                 "Minecraft sound engine stopped the radio", null);
     }
 }

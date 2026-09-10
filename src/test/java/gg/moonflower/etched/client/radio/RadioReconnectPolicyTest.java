@@ -82,6 +82,14 @@ class RadioReconnectPolicyTest {
         assertTrue(policy.isSustainedPlayback(30_000L));
     }
 
+    @Test
+    void treatsAnUnexpectedSoundEngineStopAsRecoverable() {
+        RadioFailure failure = policy(0.5D).soundEngineStopped();
+
+        assertEquals(RadioFailure.Code.SOUND_ENGINE_STOPPED, failure.code());
+        assertTrue(failure.recoverable());
+    }
+
     private static RadioReconnectPolicy policy(double random) {
         return new RadioReconnectPolicy(
                 new long[]{1_000L, 2_000L, 5_000L, 10_000L, 20_000L, 30_000L},
