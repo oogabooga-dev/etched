@@ -12,6 +12,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -35,6 +36,7 @@ public final class RadioBufferedInputStream extends InputStream {
     private final Condition notFull;
     private final CompletableFuture<Startup> startup;
     private final AtomicBoolean sourceClosed;
+    private final ExecutorService producerExecutor;
 
     private volatile Future<?> producerTask;
     private State state;
@@ -74,6 +76,7 @@ public final class RadioBufferedInputStream extends InputStream {
         this.notFull = this.lock.newCondition();
         this.startup = new CompletableFuture<>();
         this.sourceClosed = new AtomicBoolean();
+        this.producerExecutor = producerExecutor;
         this.state = State.OPEN;
 
         if (cancellation.isCancelled()) {
@@ -346,7 +349,15 @@ public final class RadioBufferedInputStream extends InputStream {
         this.closeSource();
         Future<?> task = this.producerTask;
         if (task != null) {
-            task.cancel(true);
+            cancel(this.producerExecutor, task);
+        }
+    }
+
+    private static void cancel(ExecutorService executor, Future<?> future) {
+        future.cancel(true);
+        if (executor instanceof ThreadPoolExecutor pool && future instanceof Runnable task) {
+            pool.remove(task);
+            pool.purge();
         }
     }
 

@@ -326,6 +326,50 @@ class ProductionRadioSessionDriverTest {
     }
 
     @Test
+    void normalStopLeavesTransferredAudioOwnedBySoundEngine() throws Exception {
+        RadioSourceProgram program = this.program(RadioSourceProgram.Kind.STATION,
+                List.of(this.track("one")));
+        FakeSoundOutput sounds = new FakeSoundOutput(false);
+        ProductionRadioSessionDriver driver = this.driver(fixed(program), sounds);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.baseUri.resolve("/stop-ownership").toString());
+        RecordingEvents events = new RecordingEvents(session, attempt);
+        driver.start(KEY, new RadioConfiguration(attempt.source(), false), session, attempt, events);
+        await(() -> sounds.audio.size() == 1);
+        RadioAudioStream audio = sounds.audio.get(0);
+
+        session.stop();
+        driver.stop(KEY, session);
+
+        assertEquals(1, sounds.stops.get());
+        assertFalse(audio.termination().toCompletableFuture().isDone());
+        audio.close();
+        driver.shutdown();
+    }
+
+    @Test
+    void soundStopFailureClosesTransferredAudioDirectly() throws Exception {
+        RadioSourceProgram program = this.program(RadioSourceProgram.Kind.STATION,
+                List.of(this.track("one")));
+        FakeSoundOutput sounds = new FakeSoundOutput(false);
+        ProductionRadioSessionDriver driver = this.driver(fixed(program), sounds);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.baseUri.resolve("/stop-failure").toString());
+        RecordingEvents events = new RecordingEvents(session, attempt);
+        driver.start(KEY, new RadioConfiguration(attempt.source(), false), session, attempt, events);
+        await(() -> sounds.audio.size() == 1);
+        RadioAudioStream audio = sounds.audio.get(0);
+        sounds.failStop = true;
+
+        session.stop();
+        driver.stop(KEY, session);
+
+        assertEquals(RadioAudioStream.TerminalState.CLOSED,
+                audio.termination().toCompletableFuture().get(2, TimeUnit.SECONDS).state());
+        driver.shutdown();
+    }
+
+    @Test
     void malformedSourceIsReportedAsInvalidUrl() throws Exception {
         AtomicInteger resolverCalls = new AtomicInteger();
         RadioSourceProgramResolver resolver = new RadioSourceProgramResolver() {
@@ -416,6 +460,40 @@ class ProductionRadioSessionDriverTest {
         driver.shutdown();
     }
 
+    @Test
+    void ownerRejectionAfterHandoffDoesNotStopSoundOffThread() throws Exception {
+        RadioSourceProgram program = this.program(RadioSourceProgram.Kind.STATION,
+                List.of(this.track("one")));
+        FakeSoundOutput sounds = new FakeSoundOutput(false);
+        AtomicInteger ownerDispatches = new AtomicInteger();
+        RadioNetworkPolicy allowTestServer = ignored -> {
+        };
+        ProductionRadioSessionDriver driver = new ProductionRadioSessionDriver(
+                fixed(program), cancellation -> new RadioResolveContext(
+                new RadioHttpTransportImpl(Proxy.NO_PROXY, allowTestServer,
+                        Duration.ofSeconds(2), Duration.ofSeconds(2), 2), allowTestServer,
+                cancellation, RadioResolveLimits.DEFAULT), this.resolvers, this.producers,
+                this.decoders, command -> {
+                    if (ownerDispatches.incrementAndGet() > 2) {
+                        throw new java.util.concurrent.RejectedExecutionException("owner stopped");
+                    }
+                    command.run();
+                }, sounds, () -> true);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.baseUri.resolve("/owner-handoff").toString());
+        RecordingEvents events = new RecordingEvents(session, attempt);
+
+        driver.start(KEY, new RadioConfiguration(attempt.source(), false), session, attempt, events);
+        await(() -> sounds.audio.size() == 1);
+        sounds.played.get(0).onStop();
+        await(() -> events.unavailableOwners.get() == 1);
+
+        assertEquals(0, sounds.stops.get());
+        assertEquals(RadioAudioStream.TerminalState.CLOSED,
+                sounds.audio.get(0).termination().toCompletableFuture().get(2, TimeUnit.SECONDS).state());
+        driver.shutdown();
+    }
+
     private ProductionRadioSessionDriver driver(RadioSourceProgramResolver resolver,
                                                 FakeSoundOutput sounds) {
         RadioNetworkPolicy allowTestServer = ignored -> {
@@ -486,6 +564,7 @@ class ProductionRadioSessionDriverTest {
         private final AtomicInteger stops = new AtomicInteger();
         private final boolean failPlay;
         private final boolean acceptPlay;
+        private volatile boolean failStop;
 
         private FakeSoundOutput(boolean failPlay) {
             this(failPlay, true);
@@ -517,6 +596,9 @@ class ProductionRadioSessionDriverTest {
         @Override
         public void stop(RadioSoundInstance sound) {
             this.stops.incrementAndGet();
+            if (this.failStop) {
+                throw new IllegalStateException("SoundManager failed to stop playback");
+            }
             sound.onStop();
         }
     }

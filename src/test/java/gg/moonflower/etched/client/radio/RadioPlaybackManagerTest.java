@@ -166,6 +166,62 @@ class RadioPlaybackManagerTest {
     }
 
     @Test
+    void repeatedUrlAndRedstoneChurnNeverOverlapsBackendOwnership() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 4, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.update(key, ENABLED);
+        for (int i = 0; i < 100; i++) {
+            String url = "https://radio.example/live/" + i;
+            StartedSession previous = sessions.started.get(sessions.started.size() - 1);
+            manager.update(key, new RadioConfiguration(url, false));
+            assertTrue(previous.attempt().cancellation().isCancelled());
+            StartedSession started = sessions.started.get(sessions.started.size() - 1);
+            manager.update(key, new RadioConfiguration(url, true));
+            assertTrue(started.attempt().cancellation().isCancelled());
+            manager.update(key, new RadioConfiguration(url, false));
+        }
+        manager.remove(key);
+
+        assertEquals(201, sessions.started.size());
+        assertEquals(1, sessions.maximumOpen);
+        assertTrue(sessions.open.isEmpty());
+        assertTrue(sessions.openSessions.isEmpty());
+        assertEquals(0, connections.activeCount());
+        assertEquals(0, connections.queuedCount());
+    }
+
+    @Test
+    void replacingQueuedRadioStartsOnlyItsLatestConfiguration() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 1, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey incumbent = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey queued = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+        manager.update(incumbent, ENABLED);
+
+        for (int i = 0; i < 50; i++) {
+            manager.update(queued, new RadioConfiguration("https://radio.example/queued/" + i, false));
+            assertEquals(1, connections.queuedCount());
+        }
+        manager.remove(incumbent);
+
+        assertEquals(2, sessions.started.size());
+        assertEquals("https://radio.example/queued/49", sessions.started.get(1).attempt().source());
+        assertEquals(1, connections.activeCount());
+        assertEquals(0, connections.queuedCount());
+        assertEquals(1, sessions.maximumOpen);
+    }
+
+    @Test
     void normalizesSurroundingUrlWhitespaceBeforeStartingASession() {
         RecordingSessionDriver sessions = new RecordingSessionDriver();
         RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions);
@@ -661,6 +717,7 @@ class RadioPlaybackManagerTest {
         private final List<RadioKey> aborted = new ArrayList<>();
         private final List<String> lifecycle = new ArrayList<>();
         private final Set<RadioKey> open = new HashSet<>();
+        private final Set<RadioSession> openSessions = new HashSet<>();
         private boolean throwOnStart;
         private boolean openBeforeThrow;
         private boolean throwOnStop;
@@ -675,14 +732,16 @@ class RadioPlaybackManagerTest {
             if (this.throwOnStart) {
                 if (this.openBeforeThrow) {
                     this.open.add(key);
-                    this.maximumOpen = Math.max(this.maximumOpen, this.open.size());
+                    this.openSessions.add(session);
+                    this.maximumOpen = Math.max(this.maximumOpen, this.openSessions.size());
                 }
                 throw this.startFailure == null
                         ? new IllegalStateException("start failed") : this.startFailure;
             }
             this.started.add(new StartedSession(key, configuration, session, attempt, events));
             this.open.add(key);
-            this.maximumOpen = Math.max(this.maximumOpen, this.open.size());
+            this.openSessions.add(session);
+            this.maximumOpen = Math.max(this.maximumOpen, this.openSessions.size());
             this.lifecycle.add("start:" + key);
         }
 
@@ -697,6 +756,7 @@ class RadioPlaybackManagerTest {
             }
             this.stopped.add(key);
             this.open.remove(key);
+            this.openSessions.remove(session);
             this.lifecycle.add("stop:" + key);
             if (this.throwOnStop) {
                 throw new IllegalStateException("stop failed");
@@ -707,6 +767,7 @@ class RadioPlaybackManagerTest {
         public void abort(RadioKey key, RadioSession session, RadioSession.Attempt attempt) {
             this.aborted.add(key);
             this.open.remove(key);
+            this.openSessions.remove(session);
             this.lifecycle.add("abort:" + key);
             if (this.throwOnAbort) {
                 throw new IllegalStateException("abort failed");

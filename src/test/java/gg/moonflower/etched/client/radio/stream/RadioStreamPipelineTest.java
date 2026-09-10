@@ -20,10 +20,13 @@ import java.net.Proxy;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.time.Duration;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -142,6 +145,36 @@ class RadioStreamPipelineTest {
         }
     }
 
+    @Test
+    void closeRemovesQueuedDecoderTask() throws Exception {
+        ThreadPoolExecutor decoder = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1));
+        CountDownLatch occupied = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        decoder.execute(() -> {
+            occupied.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertTrue(occupied.await(2, TimeUnit.SECONDS));
+        RadioSession.Attempt attempt = new RadioSession().start(this.uri.toString());
+        RadioStreamPipeline.Preparation preparation = RadioStreamPipeline.prepare(
+                this.resolve(attempt), attempt.cancellation(), this.producers, decoder, true);
+        try {
+            await(() -> decoder.getQueue().size() == 1);
+
+            preparation.close();
+
+            assertTrue(decoder.getQueue().isEmpty());
+        } finally {
+            release.countDown();
+            decoder.shutdownNow();
+        }
+    }
+
     private RadioResolvedSource resolve(RadioSession.Attempt attempt) throws Exception {
         RadioNetworkPolicy allowTestServer = ignored -> {
         };
@@ -188,6 +221,16 @@ class RadioStreamPipelineTest {
                 return bytes;
             }
             bytes += output.remaining();
+        }
+    }
+
+    private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("Timed out waiting for asynchronous radio work");
+            }
+            Thread.sleep(10L);
         }
     }
 }
