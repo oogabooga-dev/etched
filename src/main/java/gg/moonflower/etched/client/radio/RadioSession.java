@@ -18,6 +18,8 @@ public final class RadioSession {
     private RadioPlaybackState state = RadioPlaybackState.STOPPED;
     private RadioFailure failure;
     private RadioCancellation cancellation;
+    private String streamTitle;
+    private PendingStreamTitle pendingStreamTitle;
 
     public Attempt start(String source) {
         Objects.requireNonNull(source, "source");
@@ -68,6 +70,7 @@ public final class RadioSession {
 
             this.state = RadioPlaybackState.RECONNECT_WAIT;
             this.failure = failure;
+            this.pendingStreamTitle = null;
             previous = this.cancellation;
             this.cancellation = new RadioCancellation();
             wait = new ReconnectWait(this.generation, this.cancellation);
@@ -109,6 +112,8 @@ public final class RadioSession {
             this.generation++;
             this.state = RadioPlaybackState.STOPPED;
             this.failure = null;
+            this.streamTitle = null;
+            this.pendingStreamTitle = null;
             previous = this.cancellation;
             this.cancellation = null;
         }
@@ -117,7 +122,34 @@ public final class RadioSession {
     }
 
     public synchronized Snapshot snapshot() {
-        return new Snapshot(this.generation, this.source, this.state, this.failure);
+        return new Snapshot(this.generation, this.source, this.state, this.failure, this.streamTitle);
+    }
+
+    /** Coalesces metadata produced by the exact currently active stream attempt. */
+    public synchronized boolean offerStreamTitle(Attempt attempt, String streamTitle) {
+        Objects.requireNonNull(attempt, "attempt");
+        Objects.requireNonNull(streamTitle, "streamTitle");
+        if (!this.isCurrentAttempt(attempt)) {
+            return false;
+        }
+        this.pendingStreamTitle = new PendingStreamTitle(
+                attempt.generation(), attempt.cancellation(), streamTitle);
+        return true;
+    }
+
+    /** Applies at most one latest metadata update from the client tick. */
+    public synchronized boolean applyPendingStreamTitle() {
+        PendingStreamTitle pending = this.pendingStreamTitle;
+        this.pendingStreamTitle = null;
+        if (pending == null || !this.isCurrentAttempt(pending.generation(), pending.cancellation())) {
+            return false;
+        }
+        String nextTitle = pending.streamTitle().isEmpty() ? null : pending.streamTitle();
+        if (Objects.equals(this.streamTitle, nextTitle)) {
+            return false;
+        }
+        this.streamTitle = nextTitle;
+        return true;
     }
 
     private boolean finishAttempt(long generation, RadioPlaybackState nextState, RadioFailure failure) {
@@ -129,6 +161,7 @@ public final class RadioSession {
 
             this.state = nextState;
             this.failure = failure;
+            this.pendingStreamTitle = null;
             previous = this.cancellation;
             this.cancellation = null;
         }
@@ -149,11 +182,27 @@ public final class RadioSession {
         };
     }
 
+    private boolean isCurrentAttempt(Attempt attempt) {
+        return this.isCurrentAttempt(attempt.generation(), attempt.cancellation());
+    }
+
+    private boolean isCurrentAttempt(long generation, RadioCancellation cancellation) {
+        return this.generation == generation
+                && this.cancellation == cancellation
+                && !cancellation.isCancelled()
+                && switch (this.state) {
+            case RESOLVING, CONNECTING, BUFFERING, PLAYING -> true;
+            default -> false;
+        };
+    }
+
     private Attempt beginAttempt(String source) {
         this.generation++;
         this.source = source;
         this.state = RadioPlaybackState.RESOLVING;
         this.failure = null;
+        this.streamTitle = null;
+        this.pendingStreamTitle = null;
         this.cancellation = new RadioCancellation();
         return new Attempt(this.generation, this.source, this.cancellation);
     }
@@ -189,11 +238,19 @@ public final class RadioSession {
     }
 
     public record Snapshot(long generation, String source, RadioPlaybackState state,
-                           @Nullable RadioFailure failure) {
+                           @Nullable RadioFailure failure, @Nullable String streamTitle) {
 
         public Snapshot {
             Objects.requireNonNull(source, "source");
             Objects.requireNonNull(state, "state");
+        }
+    }
+
+    private record PendingStreamTitle(long generation, RadioCancellation cancellation, String streamTitle) {
+
+        private PendingStreamTitle {
+            Objects.requireNonNull(cancellation, "cancellation");
+            Objects.requireNonNull(streamTitle, "streamTitle");
         }
     }
 }

@@ -51,6 +51,58 @@ class RadioSessionTest {
     }
 
     @Test
+    void coalescesCurrentAttemptMetadataUntilClientTickDrain() {
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("https://radio.example/live");
+
+        assertTrue(session.offerStreamTitle(attempt, "First"));
+        assertTrue(session.offerStreamTitle(attempt, "Latest"));
+        assertNull(session.snapshot().streamTitle());
+        assertTrue(session.applyPendingStreamTitle());
+        assertEquals("Latest", session.snapshot().streamTitle());
+        assertFalse(session.applyPendingStreamTitle());
+
+        assertTrue(session.offerStreamTitle(attempt, ""));
+        assertTrue(session.applyPendingStreamTitle());
+        assertNull(session.snapshot().streamTitle());
+    }
+
+    @Test
+    void rejectsMetadataFromCancelledAttemptWithSameGeneration() {
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("https://radio.example/live");
+        RadioFailure failure = RadioFailure.recoverable(
+                RadioFailure.Code.READ_TIMEOUT, "Station stopped sending data", null);
+
+        RadioSession.ReconnectWait wait = session.scheduleReconnect(
+                attempt.generation(), failure).orElseThrow();
+
+        assertEquals(attempt.generation(), wait.generation());
+        assertFalse(session.offerStreamTitle(attempt, "Stale"));
+        assertFalse(session.applyPendingStreamTitle());
+        assertNull(session.snapshot().streamTitle());
+    }
+
+    @Test
+    void newAttemptAndStopClearMetadata() {
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt first = session.start("https://radio.example/first");
+        session.offerStreamTitle(first, "First");
+        session.applyPendingStreamTitle();
+
+        RadioSession.Attempt second = session.start("https://radio.example/second");
+        assertNull(session.snapshot().streamTitle());
+        assertFalse(session.offerStreamTitle(first, "Stale"));
+        session.offerStreamTitle(second, "Second");
+        session.applyPendingStreamTitle();
+        assertEquals("Second", session.snapshot().streamTitle());
+
+        session.stop();
+        assertNull(session.snapshot().streamTitle());
+        assertFalse(session.offerStreamTitle(second, "Late"));
+    }
+
+    @Test
     void stopIsIdempotentAndInvalidatesCurrentGeneration() {
         RadioSession session = new RadioSession();
         RadioSession.Attempt attempt = session.start("https://radio.example/live");

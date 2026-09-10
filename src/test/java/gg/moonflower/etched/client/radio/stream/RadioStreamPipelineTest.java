@@ -63,10 +63,12 @@ class RadioStreamPipelineTest {
 
     @Test
     void resolvesBuffersStripsIcyAndDecodesUsingOneGet() throws Exception {
-        RadioSession.Attempt attempt = new RadioSession().start(this.uri.toString());
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.uri.toString());
         RadioResolvedSource source = this.resolve(attempt);
         RadioStreamPipeline.Preparation preparation = RadioStreamPipeline.prepare(source,
-                attempt.cancellation(), this.producers, this.decoders, true);
+                attempt.cancellation(), this.producers, this.decoders, true,
+                title -> session.offerStreamTitle(attempt, title));
         try (preparation) {
             RadioAudioStream audio = preparation.stream().toCompletableFuture().get(5, TimeUnit.SECONDS);
             try (audio) {
@@ -76,6 +78,8 @@ class RadioStreamPipelineTest {
             }
         }
         assertEquals(1, this.requests.get());
+        assertTrue(session.applyPendingStreamTitle());
+        assertEquals("T", session.snapshot().streamTitle());
     }
 
     @Test

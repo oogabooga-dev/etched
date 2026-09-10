@@ -73,6 +73,7 @@ class RadioSoundInstanceTest {
         RadioSoundInstance sound = sound(attempt, stream, new AtomicInteger());
 
         session.stop();
+        sound.tick();
         assertTrue(sound.isStopped());
         assertTrue(sound.getStream(null, null, false).isCompletedExceptionally());
         assertEquals(1, stream.closeCount.get());
@@ -94,6 +95,23 @@ class RadioSoundInstanceTest {
         assertFalse(sound.streamTransferred());
         assertTrue(sound.isStopped());
         assertEquals(1, stream.closeCount.get());
+    }
+
+    @Test
+    void reportsSoundEngineStopOnlyOnce() {
+        RadioSession.Attempt attempt = new RadioSession().start("https://radio.example/live");
+        AtomicInteger stopped = new AtomicInteger();
+        ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION,
+                new ResourceLocation("etched_test", "radio"));
+        RadioSoundInstance sound = new RadioSoundInstance(
+                new RadioKey(dimension, BlockPos.ZERO), attempt.generation(), new FakeAudioStream(),
+                attempt.cancellation(), 4.0F, 8, () -> {
+        }, stopped::incrementAndGet);
+
+        sound.onStop();
+        sound.onStop();
+
+        assertEquals(1, stopped.get());
     }
 
     private static RadioSoundInstance sound(RadioSession.Attempt attempt, RadioAudioStream stream,

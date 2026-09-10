@@ -3,6 +3,7 @@ package gg.moonflower.etched.client.radio.sound;
 import gg.moonflower.etched.client.radio.RadioCancellation;
 import gg.moonflower.etched.client.radio.RadioKey;
 import gg.moonflower.etched.client.radio.stream.RadioAudioStream;
+import gg.moonflower.etched.api.sound.SoundStopListener;
 import gg.moonflower.etched.core.Etched;
 import net.minecraft.client.resources.sounds.AbstractTickableSoundInstance;
 import net.minecraft.client.resources.sounds.Sound;
@@ -20,7 +21,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 /** Positional streaming sound backed exclusively by one radio audio stream. */
-public final class RadioSoundInstance extends AbstractTickableSoundInstance {
+public final class RadioSoundInstance extends AbstractTickableSoundInstance implements SoundStopListener {
 
     private static final ResourceLocation LOCATION = new ResourceLocation(Etched.MOD_ID, "radio_stream");
     private static final SoundEvent EVENT = SoundEvent.createVariableRangeEvent(LOCATION);
@@ -30,14 +31,23 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance {
     private final RadioAudioStream stream;
     private final RadioCancellation cancellation;
     private final int attenuationDistance;
-    private final Runnable streamStarted;
+    private final Runnable streamHandedOff;
+    private final Runnable soundStopped;
     private volatile boolean transferred;
     private boolean untransferredClosed;
+    private boolean stopReported;
     private volatile boolean stopRequested;
 
     public RadioSoundInstance(RadioKey key, long generation, RadioAudioStream stream,
+                               RadioCancellation cancellation, float volume,
+                               int attenuationDistance, Runnable streamStarted) {
+        this(key, generation, stream, cancellation, volume, attenuationDistance, streamStarted, () -> {
+        });
+    }
+
+    public RadioSoundInstance(RadioKey key, long generation, RadioAudioStream stream,
                               RadioCancellation cancellation, float volume,
-                              int attenuationDistance, Runnable streamStarted) {
+                              int attenuationDistance, Runnable streamHandedOff, Runnable soundStopped) {
         super(EVENT, SoundSource.RECORDS, SoundInstance.createUnseededRandom());
         this.key = Objects.requireNonNull(key, "key");
         this.generation = generation;
@@ -50,7 +60,8 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance {
             throw new IllegalArgumentException("attenuationDistance must be positive");
         }
         this.attenuationDistance = attenuationDistance;
-        this.streamStarted = Objects.requireNonNull(streamStarted, "streamStarted");
+        this.streamHandedOff = Objects.requireNonNull(streamHandedOff, "streamHandedOff");
+        this.soundStopped = Objects.requireNonNull(soundStopped, "soundStopped");
         this.volume = volume;
         this.x = key.pos().getX() + 0.5;
         this.y = key.pos().getY() + 0.5;
@@ -80,7 +91,6 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance {
             closeStream = !this.transferred && !this.untransferredClosed;
             this.untransferredClosed |= closeStream;
         }
-        this.stop();
         if (closeStream) {
             try {
                 this.stream.close();
@@ -124,7 +134,7 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance {
                     new IllegalStateException("Radio sound was stopped before stream handoff"));
         }
         try {
-            this.streamStarted.run();
+            this.streamHandedOff.run();
         } catch (Throwable exception) {
             synchronized (this) {
                 this.transferred = false;
@@ -147,6 +157,21 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance {
     public void tick() {
         if (this.stopRequested || this.cancellation.isCancelled()) {
             this.requestStop();
+            this.stop();
+        }
+    }
+
+    @Override
+    public void onStop() {
+        synchronized (this) {
+            if (this.stopReported) {
+                return;
+            }
+            this.stopReported = true;
+        }
+        try {
+            this.soundStopped.run();
+        } catch (RuntimeException ignored) {
         }
     }
 
