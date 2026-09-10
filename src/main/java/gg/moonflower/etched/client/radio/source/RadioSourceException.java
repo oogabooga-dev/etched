@@ -12,14 +12,20 @@ public final class RadioSourceException extends IOException {
     private final RadioFailure.Code code;
     private final boolean recoverable;
     private final long retryAfterMillis;
+    private final int httpStatus;
 
     public RadioSourceException(RadioFailure.Code code, boolean recoverable, String message,
                                  @Nullable Throwable cause) {
-        this(code, recoverable, message, cause, RadioFailure.NO_RETRY_AFTER);
+        this(code, recoverable, message, cause, RadioFailure.NO_RETRY_AFTER, -1);
     }
 
     public RadioSourceException(RadioFailure.Code code, boolean recoverable, String message,
                                 @Nullable Throwable cause, long retryAfterMillis) {
+        this(code, recoverable, message, cause, retryAfterMillis, -1);
+    }
+
+    public RadioSourceException(RadioFailure.Code code, boolean recoverable, String message,
+                                @Nullable Throwable cause, long retryAfterMillis, int httpStatus) {
         super(message, cause);
         this.code = Objects.requireNonNull(code, "code");
         this.recoverable = recoverable;
@@ -27,6 +33,10 @@ public final class RadioSourceException extends IOException {
             throw new IllegalArgumentException("Retry-After must be non-negative or absent");
         }
         this.retryAfterMillis = retryAfterMillis;
+        if (httpStatus != -1 && (httpStatus < 100 || httpStatus > 999)) {
+            throw new IllegalArgumentException("HTTP status must be absent or a three-digit value");
+        }
+        this.httpStatus = httpStatus;
     }
 
     public RadioFailure.Code code() {
@@ -39,6 +49,10 @@ public final class RadioSourceException extends IOException {
 
     public long retryAfterMillis() {
         return this.retryAfterMillis;
+    }
+
+    public int httpStatus() {
+        return this.httpStatus;
     }
 
     public RadioFailure toFailure() {

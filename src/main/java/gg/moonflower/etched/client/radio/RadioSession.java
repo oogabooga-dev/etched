@@ -49,6 +49,21 @@ public final class RadioSession {
         return this.advance(attempt.generation(), attempt.cancellation(), nextState, nowMillis);
     }
 
+    /** Advances the exact active finite program to its next independently opened track. */
+    public synchronized boolean advanceToNextTrack(Attempt attempt) {
+        Objects.requireNonNull(attempt, "attempt");
+        if (!this.isCurrentAttempt(attempt)) {
+            return false;
+        }
+        if (this.state != RadioPlaybackState.PLAYING) {
+            throw new IllegalStateException("Cannot advance a radio track from " + this.state);
+        }
+        this.state = RadioPlaybackState.CONNECTING;
+        this.streamTitle = null;
+        this.pendingStreamTitle = null;
+        return true;
+    }
+
     private boolean advance(long generation, @Nullable RadioCancellation expectedCancellation,
                             RadioPlaybackState nextState, long nowMillis) {
         Objects.requireNonNull(nextState, "nextState");
@@ -67,7 +82,7 @@ public final class RadioSession {
         }
 
         this.state = nextState;
-        if (nextState == RadioPlaybackState.PLAYING) {
+        if (nextState == RadioPlaybackState.PLAYING && this.playingSinceMillis < 0L) {
             this.playingSinceMillis = nowMillis;
         }
         return true;
@@ -100,7 +115,7 @@ public final class RadioSession {
                 return Optional.empty();
             }
 
-            if (this.state == RadioPlaybackState.PLAYING
+            if (this.playingSinceMillis >= 0L
                     && policy.isSustainedPlayback(Math.max(0L, nowMillis - this.playingSinceMillis))) {
                 this.attemptNumber = 1;
             }
@@ -126,6 +141,28 @@ public final class RadioSession {
     public boolean fail(Attempt attempt, RadioFailure failure) {
         Objects.requireNonNull(attempt, "attempt");
         return this.fail(attempt.generation(), attempt.cancellation(), failure);
+    }
+
+    /** Completes the exact active finite program without scheduling a reconnect. */
+    public boolean complete(Attempt attempt) {
+        Objects.requireNonNull(attempt, "attempt");
+        RadioCancellation previous;
+        synchronized (this) {
+            if (!this.isCurrentAttempt(attempt)) {
+                return false;
+            }
+            this.state = RadioPlaybackState.STOPPED;
+            this.failure = null;
+            this.streamTitle = null;
+            this.pendingStreamTitle = null;
+            this.attemptNumber = 0;
+            this.playingSinceMillis = -1L;
+            this.nextRetryAtMillis = -1L;
+            previous = this.cancellation;
+            this.cancellation = null;
+        }
+        cancel(previous);
+        return true;
     }
 
     private boolean fail(long generation, @Nullable RadioCancellation expectedCancellation, RadioFailure failure) {

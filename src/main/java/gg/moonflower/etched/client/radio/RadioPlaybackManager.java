@@ -7,7 +7,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -19,10 +22,11 @@ import java.util.Optional;
  */
 public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
+    private static final Logger LOGGER = LogManager.getLogger();
     private static final int MAX_ACTIVE_RADIOS = 8;
     private static final int MAX_QUEUED_RADIOS = 32;
     private static final RadioPlaybackManager INSTANCE = new RadioPlaybackManager(
-            new LegacyRadioPlaybackDriver(), SessionDriver.NOOP, new MinecraftRadioPlaybackEffects(),
+            new LegacyRadioPlaybackDriver(), new ProductionRadioSessionDriver(), new MinecraftRadioPlaybackEffects(),
             RadioReconnectController.createDefault(command -> Minecraft.getInstance().execute(command)));
 
     private final Map<RadioKey, ManagedRadio> radios;
@@ -220,8 +224,12 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         try {
             this.clearAll();
         } finally {
-            this.connections.close();
-            this.reconnects.close();
+            try {
+                this.sessions.shutdown();
+            } finally {
+                this.connections.close();
+                this.reconnects.close();
+            }
         }
     }
 
@@ -284,6 +292,25 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
                     }
 
                     @Override
+                    public void sequenceAdvance(Runnable continuation) {
+                        reconnects.execute(() -> {
+                            if (radio.session().advanceToNextTrack(attempt)) {
+                                updateEffects(key, radio);
+                                continuation.run();
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void completion() {
+                        reconnects.execute(() -> {
+                            if (radio.session().complete(attempt)) {
+                                terminalStateChanged(key, radio, attempt);
+                            }
+                        });
+                    }
+
+                    @Override
                     public void failure(Throwable failure) {
                         reconnects.failure(radio.session(), attempt, failure,
                                 retry -> startCurrentSession(key, radio, retry),
@@ -303,10 +330,30 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
                                 retry -> startCurrentSession(key, radio, retry),
                                 () -> terminalStateChanged(key, radio, attempt));
                     }
+
+                    @Override
+                    public void ownerUnavailable(Throwable failure) {
+                        RadioFailure unavailable = RadioFailure.fatal(RadioFailure.Code.RESOURCE_LIMIT,
+                                "Radio client executor is unavailable", failure);
+                        if (!radio.session().fail(attempt, unavailable)) {
+                            return;
+                        }
+                        try {
+                            sessions.abort(key, radio.session(), attempt);
+                        } finally {
+                            radio.releaseAttempt(attempt);
+                        }
+                    }
                 });
     }
 
     private void terminalStateChanged(RadioKey key, ManagedRadio radio, RadioSession.Attempt attempt) {
+        RadioSession.Snapshot snapshot = radio.session().snapshot();
+        if (snapshot.failure() != null) {
+            LOGGER.warn("Radio {} generation {} for host {} ended with {} (recoverable={}): {}",
+                    key, attempt.generation(), sourceHost(attempt.source()), snapshot.failure().code(),
+                    snapshot.failure().recoverable(), snapshot.failure().message());
+        }
         try {
             if (radio.ownsAttempt(attempt)) {
                 this.sessions.abort(key, radio.session(), attempt);
@@ -331,6 +378,15 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     private void updateEffects(RadioKey key, ManagedRadio radio) {
         if (this.radios.get(key) == radio) {
             this.effects.update(key, radio.session().snapshot());
+        }
+    }
+
+    private static String sourceHost(String source) {
+        try {
+            String host = URI.create(source).getHost();
+            return host == null ? "<invalid>" : host;
+        } catch (IllegalArgumentException exception) {
+            return "<invalid>";
         }
     }
 
@@ -377,17 +433,26 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         void stop(RadioKey key, RadioSession session);
 
         void abort(RadioKey key, RadioSession session, RadioSession.Attempt attempt);
+
+        default void shutdown() {
+        }
     }
 
     interface SessionEvents {
 
         void progress(RadioPlaybackState state);
 
+        void sequenceAdvance(Runnable continuation);
+
+        void completion();
+
         void failure(Throwable failure);
 
         void termination(RadioAudioStream.Termination termination);
 
         void soundEngineStopped();
+
+        void ownerUnavailable(Throwable failure);
     }
 
     private static final class ManagedRadio {
@@ -409,16 +474,18 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
             return this.session;
         }
 
-        private void ownAttempt(RadioSession.Attempt attempt, RadioConnectionScheduler.Lease lease) {
+        private synchronized void ownAttempt(RadioSession.Attempt attempt,
+                                             RadioConnectionScheduler.Lease lease) {
             this.releaseAttempt(null);
             this.attemptLease = new AttemptLease(attempt, lease);
         }
 
-        private boolean ownsAttempt(RadioSession.Attempt attempt) {
+        private synchronized boolean ownsAttempt(RadioSession.Attempt attempt) {
             return this.attemptLease != null && this.attemptLease.attempt() == attempt;
         }
 
-        private void releaseAttempt(@org.jetbrains.annotations.Nullable RadioSession.Attempt attempt) {
+        private synchronized void releaseAttempt(
+                @org.jetbrains.annotations.Nullable RadioSession.Attempt attempt) {
             if (this.attemptLease == null
                     || attempt != null && this.attemptLease.attempt() != attempt) {
                 return;
