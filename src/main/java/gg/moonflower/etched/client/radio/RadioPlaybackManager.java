@@ -1,7 +1,9 @@
 package gg.moonflower.etched.client.radio;
 
+import gg.moonflower.etched.client.radio.stream.RadioAudioStream;
 import gg.moonflower.etched.common.radio.RadioClientBridge;
 import gg.moonflower.etched.common.radio.RadioConfiguration;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
@@ -17,13 +19,19 @@ import java.util.Optional;
  */
 public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
+    private static final int MAX_ACTIVE_RADIOS = 8;
+    private static final int MAX_QUEUED_RADIOS = 32;
     private static final RadioPlaybackManager INSTANCE = new RadioPlaybackManager(
-            new LegacyRadioPlaybackDriver(), SessionDriver.NOOP, new MinecraftRadioPlaybackEffects());
+            new LegacyRadioPlaybackDriver(), SessionDriver.NOOP, new MinecraftRadioPlaybackEffects(),
+            RadioReconnectController.createDefault(command -> Minecraft.getInstance().execute(command)));
 
     private final Map<RadioKey, ManagedRadio> radios;
     private final PlaybackDriver playback;
     private final SessionDriver sessions;
     private final RadioPlaybackEffects effects;
+    private final RadioReconnectController reconnects;
+    private final RadioConnectionScheduler connections;
+    private boolean closed;
 
     RadioPlaybackManager(PlaybackDriver playback) {
         this(playback, SessionDriver.NOOP, RadioPlaybackEffects.NOOP);
@@ -34,10 +42,23 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     }
 
     RadioPlaybackManager(PlaybackDriver playback, SessionDriver sessions, RadioPlaybackEffects effects) {
+        this(playback, sessions, effects, RadioReconnectController.createDefault(Runnable::run));
+    }
+
+    RadioPlaybackManager(PlaybackDriver playback, SessionDriver sessions, RadioPlaybackEffects effects,
+                         RadioReconnectController reconnects) {
+        this(playback, sessions, effects, reconnects,
+                new RadioConnectionScheduler(MAX_ACTIVE_RADIOS, MAX_QUEUED_RADIOS, reconnects::execute));
+    }
+
+    RadioPlaybackManager(PlaybackDriver playback, SessionDriver sessions, RadioPlaybackEffects effects,
+                         RadioReconnectController reconnects, RadioConnectionScheduler connections) {
         this.radios = new HashMap<>();
         this.playback = Objects.requireNonNull(playback, "playback");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.effects = Objects.requireNonNull(effects, "effects");
+        this.reconnects = Objects.requireNonNull(reconnects, "reconnects");
+        this.connections = Objects.requireNonNull(connections, "connections");
     }
 
     public static RadioPlaybackManager getInstance() {
@@ -52,6 +73,9 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     public boolean update(RadioKey key, RadioConfiguration configuration) {
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(configuration, "configuration");
+        if (this.closed) {
+            return false;
+        }
         ManagedRadio previous = this.radios.get(key);
         if (previous != null && configuration.equals(previous.configuration())) {
             return false;
@@ -59,7 +83,7 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
         if (previous != null) {
             this.radios.remove(key);
-            this.stopSession(key, previous.session());
+            this.stopSession(key, previous);
         }
         RadioSession session = new RadioSession();
         ManagedRadio radio = new ManagedRadio(configuration, session);
@@ -67,17 +91,8 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         String source = configuration.url().trim();
         if (this.sessions.enabled()) {
             if (!source.isEmpty() && !configuration.powered()) {
-                try {
-                    this.sessions.start(key, configuration, session, session.start(source));
-                } catch (RuntimeException exception) {
-                    this.radios.remove(key, radio);
-                    try {
-                        this.stopSession(key, session);
-                    } catch (RuntimeException stopException) {
-                        exception.addSuppressed(stopException);
-                    }
-                    throw exception;
-                }
+                RadioSession.Attempt attempt = session.start(source);
+                this.startSession(key, radio, attempt);
             }
             this.effects.update(key, session.snapshot());
         } else {
@@ -99,7 +114,7 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         }
 
         if (this.sessions.enabled()) {
-            this.stopSession(key, removed.session());
+            this.stopSession(key, removed);
         } else {
             removed.session().stop();
             this.playback.stop(key);
@@ -113,6 +128,9 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     }
 
     public void tick(RadioKey key, RadioConfiguration configuration) {
+        if (this.closed) {
+            return;
+        }
         this.update(key, configuration);
         if (this.sessions.enabled()) {
             ManagedRadio radio = this.radios.get(key);
@@ -150,6 +168,25 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         return radio == null ? Optional.empty() : Optional.of(radio.session().snapshot());
     }
 
+    public boolean retry(RadioKey key) {
+        Objects.requireNonNull(key, "key");
+        if (this.closed || !this.sessions.enabled()) {
+            return false;
+        }
+        ManagedRadio radio = this.radios.get(key);
+        if (radio == null || !radio.configuration().isEnabled()) {
+            return false;
+        }
+        Optional<RadioSession.Attempt> retried = radio.session().retry(radio.session().snapshot().generation());
+        if (retried.isEmpty()) {
+            return false;
+        }
+        RadioSession.Attempt attempt = retried.orElseThrow();
+        this.effects.update(key, radio.session().snapshot());
+        this.startSession(key, radio, attempt);
+        return true;
+    }
+
     public void clearAll() {
         ArrayList<Map.Entry<RadioKey, ManagedRadio>> entries = new ArrayList<>(this.radios.entrySet());
         this.radios.clear();
@@ -157,7 +194,7 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         for (Map.Entry<RadioKey, ManagedRadio> entry : entries) {
             try {
                 if (this.sessions.enabled()) {
-                    this.stopSession(entry.getKey(), entry.getValue().session());
+                    this.stopSession(entry.getKey(), entry.getValue());
                 } else {
                     entry.getValue().session().stop();
                     this.playback.stop(entry.getKey());
@@ -175,14 +212,125 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         }
     }
 
-    private void stopSession(RadioKey key, RadioSession session) {
+    public void shutdown() {
+        if (this.closed) {
+            return;
+        }
+        this.closed = true;
+        try {
+            this.clearAll();
+        } finally {
+            this.connections.close();
+            this.reconnects.close();
+        }
+    }
+
+    private void stopSession(RadioKey key, ManagedRadio radio) {
+        RadioSession session = radio.session();
         session.stop();
         if (this.sessions.enabled()) {
             try {
                 this.sessions.stop(key, session);
             } finally {
-                this.effects.stop(key);
+                try {
+                    radio.releaseAttempt(null);
+                } finally {
+                    this.effects.stop(key);
+                }
             }
+        }
+    }
+
+    private void startSession(RadioKey key, ManagedRadio radio, RadioSession.Attempt attempt) {
+        boolean accepted = this.connections.submit(attempt.cancellation(), lease -> {
+            if (this.radios.get(key) != radio || attempt.cancellation().isCancelled()) {
+                lease.close();
+                return;
+            }
+            radio.ownAttempt(attempt, lease);
+            try {
+                this.startAdmittedSession(key, radio, attempt);
+            } catch (RuntimeException exception) {
+                try {
+                    this.sessions.abort(key, radio.session(), attempt);
+                } catch (RuntimeException abortException) {
+                    exception.addSuppressed(abortException);
+                } finally {
+                    radio.releaseAttempt(attempt);
+                }
+                this.reconnects.failure(radio.session(), attempt, exception,
+                        retry -> this.startCurrentSession(key, radio, retry),
+                        () -> this.terminalStateChanged(key, radio, attempt));
+            }
+        }, () -> this.admissionDispatchFailed(radio, attempt));
+        if (!accepted) {
+            this.reconnects.failure(radio.session(), attempt, RadioConnectionScheduler.limitFailure(),
+                    retry -> this.startCurrentSession(key, radio, retry),
+                    () -> this.terminalStateChanged(key, radio, attempt));
+        }
+    }
+
+    private void admissionDispatchFailed(ManagedRadio radio, RadioSession.Attempt attempt) {
+        radio.session().fail(attempt, RadioConnectionScheduler.unavailableFailure());
+    }
+
+    private void startAdmittedSession(RadioKey key, ManagedRadio radio, RadioSession.Attempt attempt) {
+        this.sessions.start(key, radio.configuration(), radio.session(), attempt,
+                new SessionEvents() {
+                    @Override
+                    public void progress(RadioPlaybackState state) {
+                        reconnects.progress(radio.session(), attempt, state,
+                                () -> updateEffects(key, radio));
+                    }
+
+                    @Override
+                    public void failure(Throwable failure) {
+                        reconnects.failure(radio.session(), attempt, failure,
+                                retry -> startCurrentSession(key, radio, retry),
+                                () -> terminalStateChanged(key, radio, attempt));
+                    }
+
+                    @Override
+                    public void termination(RadioAudioStream.Termination termination) {
+                        reconnects.termination(radio.session(), attempt, termination,
+                                retry -> startCurrentSession(key, radio, retry),
+                                () -> terminalStateChanged(key, radio, attempt));
+                    }
+
+                    @Override
+                    public void soundEngineStopped() {
+                        reconnects.soundEngineStopped(radio.session(), attempt,
+                                retry -> startCurrentSession(key, radio, retry),
+                                () -> terminalStateChanged(key, radio, attempt));
+                    }
+                });
+    }
+
+    private void terminalStateChanged(RadioKey key, ManagedRadio radio, RadioSession.Attempt attempt) {
+        try {
+            if (radio.ownsAttempt(attempt)) {
+                this.sessions.abort(key, radio.session(), attempt);
+            }
+        } finally {
+            try {
+                radio.releaseAttempt(attempt);
+            } finally {
+                this.updateEffects(key, radio);
+            }
+        }
+    }
+
+    private void startCurrentSession(RadioKey key, ManagedRadio radio, RadioSession.Attempt attempt) {
+        if (this.radios.get(key) != radio) {
+            attempt.cancellation().cancel();
+            return;
+        }
+        this.startSession(key, radio, attempt);
+    }
+
+    private void updateEffects(RadioKey key, ManagedRadio radio) {
+        if (this.radios.get(key) == radio) {
+            this.effects.update(key, radio.session().snapshot());
         }
     }
 
@@ -207,11 +355,15 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
             @Override
             public void start(RadioKey key, RadioConfiguration configuration, RadioSession session,
-                              RadioSession.Attempt attempt) {
+                              RadioSession.Attempt attempt, SessionEvents events) {
             }
 
             @Override
             public void stop(RadioKey key, RadioSession session) {
+            }
+
+            @Override
+            public void abort(RadioKey key, RadioSession session, RadioSession.Attempt attempt) {
             }
         };
 
@@ -220,11 +372,63 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         }
 
         void start(RadioKey key, RadioConfiguration configuration, RadioSession session,
-                   RadioSession.Attempt attempt);
+                   RadioSession.Attempt attempt, SessionEvents events);
 
         void stop(RadioKey key, RadioSession session);
+
+        void abort(RadioKey key, RadioSession session, RadioSession.Attempt attempt);
     }
 
-    private record ManagedRadio(RadioConfiguration configuration, RadioSession session) {
+    interface SessionEvents {
+
+        void progress(RadioPlaybackState state);
+
+        void failure(Throwable failure);
+
+        void termination(RadioAudioStream.Termination termination);
+
+        void soundEngineStopped();
+    }
+
+    private static final class ManagedRadio {
+
+        private final RadioConfiguration configuration;
+        private final RadioSession session;
+        private AttemptLease attemptLease;
+
+        private ManagedRadio(RadioConfiguration configuration, RadioSession session) {
+            this.configuration = configuration;
+            this.session = session;
+        }
+
+        private RadioConfiguration configuration() {
+            return this.configuration;
+        }
+
+        private RadioSession session() {
+            return this.session;
+        }
+
+        private void ownAttempt(RadioSession.Attempt attempt, RadioConnectionScheduler.Lease lease) {
+            this.releaseAttempt(null);
+            this.attemptLease = new AttemptLease(attempt, lease);
+        }
+
+        private boolean ownsAttempt(RadioSession.Attempt attempt) {
+            return this.attemptLease != null && this.attemptLease.attempt() == attempt;
+        }
+
+        private void releaseAttempt(@org.jetbrains.annotations.Nullable RadioSession.Attempt attempt) {
+            if (this.attemptLease == null
+                    || attempt != null && this.attemptLease.attempt() != attempt) {
+                return;
+            }
+            RadioConnectionScheduler.Lease lease = this.attemptLease.lease();
+            this.attemptLease = null;
+            lease.close();
+        }
+    }
+
+    private record AttemptLease(RadioSession.Attempt attempt, RadioConnectionScheduler.Lease lease) {
     }
 }

@@ -14,6 +14,9 @@ import java.net.Proxy;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -484,7 +487,10 @@ class DirectRadioSourceResolverTest {
     @Test
     void classifiesHttpStatusesForFallbackAndReconnect() throws Exception {
         try (TestHttpServer server = new TestHttpServer()) {
-            server.handle("/retry", exchange -> respond(exchange, 429, new byte[0]));
+            server.handle("/retry", exchange -> {
+                exchange.getResponseHeaders().add("Retry-After", "7");
+                respond(exchange, 429, new byte[0]);
+            });
             server.handle("/fatal", exchange -> respond(exchange, 404, new byte[0]));
             server.handle("/not-implemented", exchange -> respond(exchange, 501, new byte[0]));
 
@@ -500,6 +506,65 @@ class DirectRadioSourceResolverTest {
             assertFalse(fatal.recoverable());
             assertFalse(notImplemented.recoverable());
             assertTrue(retry.recoverable());
+            assertEquals(7_000L, retry.retryAfterMillis());
+        }
+    }
+
+    @Test
+    void boundsAndIgnoresInvalidRetryAfterHints() throws Exception {
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/bounded", exchange -> {
+                exchange.getResponseHeaders().add("Retry-After", "999999999999999999999");
+                respond(exchange, 429, new byte[0]);
+            });
+            server.handle("/capped", exchange -> {
+                exchange.getResponseHeaders().add("Retry-After", "120");
+                respond(exchange, 429, new byte[0]);
+            });
+
+            RadioSourceException invalid = assertThrows(RadioSourceException.class,
+                    () -> resolver().resolve(server.uri("/bounded"), context()));
+            RadioSourceException capped = assertThrows(RadioSourceException.class,
+                    () -> resolver().resolve(server.uri("/capped"), context()));
+
+            assertEquals(RadioFailure.NO_RETRY_AFTER, invalid.retryAfterMillis());
+            assertEquals(30_000L, capped.retryAfterMillis());
+        }
+    }
+
+    @Test
+    void playlistFallbackPreservesLargestRetryAfterHint() throws Exception {
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/stations.m3u", exchange -> respond(exchange, 200, bytes(
+                    server.uri("/limited") + "\n" + server.uri("/unavailable") + "\n")));
+            server.handle("/limited", exchange -> {
+                exchange.getResponseHeaders().add("Retry-After", "30");
+                respond(exchange, 429, new byte[0]);
+            });
+            server.handle("/unavailable", exchange -> respond(exchange, 503, new byte[0]));
+
+            RadioSourceException failure = assertThrows(RadioSourceException.class,
+                    () -> resolver().resolve(server.uri("/stations.m3u"), context()));
+
+            assertTrue(failure.recoverable());
+            assertEquals(30_000L, failure.retryAfterMillis());
+        }
+    }
+
+    @Test
+    void acceptsBoundedHttpDateRetryAfterHint() throws Exception {
+        try (TestHttpServer server = new TestHttpServer()) {
+            server.handle("/date", exchange -> {
+                String retryAt = ZonedDateTime.now(ZoneOffset.UTC).plusMinutes(2)
+                        .format(DateTimeFormatter.RFC_1123_DATE_TIME);
+                exchange.getResponseHeaders().add("Retry-After", retryAt);
+                respond(exchange, 429, new byte[0]);
+            });
+
+            RadioSourceException failure = assertThrows(RadioSourceException.class,
+                    () -> resolver().resolve(server.uri("/date"), context()));
+
+            assertEquals(30_000L, failure.retryAfterMillis());
         }
     }
 

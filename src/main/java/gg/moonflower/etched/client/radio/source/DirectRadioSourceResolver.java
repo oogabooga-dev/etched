@@ -10,6 +10,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -63,7 +68,7 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         boolean transferred = false;
         try {
             consumeSteps(state, response.redirectCount(), context.limits());
-            requireSuccessfulStatus(response.statusCode());
+            requireSuccessfulStatus(response);
             byte[] prefix = readPrefix(response, input, context);
             SourceKind kind = classify(response, input, prefix);
             switch (kind) {
@@ -117,6 +122,7 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                                                  ResolutionState state, int playlistDepth)
             throws RadioSourceException {
         RadioSourceException lastRecoverable = null;
+        long retryAfterMillis = RadioFailure.NO_RETRY_AFTER;
         for (URI endpoint : endpoints) {
             context.cancellation().throwIfCancelled();
             try {
@@ -126,9 +132,14 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                     throw exception;
                 }
                 lastRecoverable = exception;
+                retryAfterMillis = Math.max(retryAfterMillis, exception.retryAfterMillis());
             }
         }
         if (lastRecoverable != null) {
+            if (retryAfterMillis != lastRecoverable.retryAfterMillis()) {
+                throw new RadioSourceException(lastRecoverable.code(), true,
+                        lastRecoverable.getMessage(), lastRecoverable, retryAfterMillis);
+            }
             throw lastRecoverable;
         }
         throw failure(RadioFailure.Code.UNSUPPORTED_AUDIO, false,
@@ -396,14 +407,39 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                 ? path.substring(dot + 1).toLowerCase(Locale.ROOT) : "";
     }
 
-    private static void requireSuccessfulStatus(int status) throws RadioSourceException {
+    private static void requireSuccessfulStatus(RadioHttpResponse response) throws RadioSourceException {
+        int status = response.statusCode();
         if (status == 200) {
             return;
         }
         boolean recoverable = status == 408 || status == 429 || status == 500
                 || status == 502 || status == 503 || status == 504;
-        throw failure(RadioFailure.Code.HTTP_STATUS, recoverable,
-                "Radio host returned HTTP status " + status, null);
+        long retryAfterMillis = status == 429 ? retryAfterMillis(response) : RadioFailure.NO_RETRY_AFTER;
+        throw new RadioSourceException(RadioFailure.Code.HTTP_STATUS, recoverable,
+                "Radio host returned HTTP status " + status, null, retryAfterMillis);
+    }
+
+    private static long retryAfterMillis(RadioHttpResponse response) {
+        String value = response.firstHeader("retry-after").orElse(null);
+        if (value == null) {
+            return RadioFailure.NO_RETRY_AFTER;
+        }
+        try {
+            long seconds = Long.parseLong(value.trim());
+            if (seconds < 0) {
+                return RadioFailure.NO_RETRY_AFTER;
+            }
+            return Math.min(seconds, 30L) * 1_000L;
+        } catch (NumberFormatException ignored) {
+            try {
+                Instant retryAt = ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME)
+                        .toInstant();
+                long delay = Duration.between(Instant.now(), retryAt).toMillis();
+                return Math.max(0L, Math.min(delay, 30_000L));
+            } catch (DateTimeParseException | ArithmeticException invalidDate) {
+                return RadioFailure.NO_RETRY_AFTER;
+            }
+        }
     }
 
     private static void addEntries(ResolutionState state, int count, RadioResolveLimits limits)

@@ -19,6 +19,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RadioSessionTest {
 
+    private static final RadioReconnectPolicy NO_JITTER = new RadioReconnectPolicy(
+            new long[]{1_000L, 2_000L, 5_000L, 10_000L, 20_000L, 30_000L},
+            30_000L, 0.0D, () -> 0.5D);
+
     @Test
     void advancesThroughThePlaybackLifecycle() {
         RadioSession session = new RadioSession();
@@ -139,6 +143,73 @@ class RadioSessionTest {
         assertEquals(RadioPlaybackState.RESOLVING, session.snapshot().state());
         assertNull(session.snapshot().failure());
         assertTrue(session.retry(attempt.generation()).isEmpty());
+    }
+
+    @Test
+    void tracksAutomaticAttemptNumberAndRetryDeadline() {
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt first = session.start("https://radio.example/live");
+        RadioFailure failure = RadioFailure.recoverable(
+                RadioFailure.Code.CONNECT_TIMEOUT, "Connection timed out", null);
+
+        RadioSession.ReconnectWait firstWait = session.scheduleReconnect(
+                first, failure, 10_000L, NO_JITTER).orElseThrow();
+
+        assertEquals(1, firstWait.attemptNumber());
+        assertEquals(11_000L, firstWait.retryAtMillis());
+        assertEquals(1, session.snapshot().attemptNumber());
+        assertEquals(11_000L, session.snapshot().nextRetryAtMillis());
+
+        RadioSession.Attempt second = session.retry(firstWait).orElseThrow();
+        RadioSession.ReconnectWait secondWait = session.scheduleReconnect(
+                second, failure, 20_000L, NO_JITTER).orElseThrow();
+
+        assertEquals(2, secondWait.attemptNumber());
+        assertEquals(22_000L, secondWait.retryAtMillis());
+        assertEquals(2, session.snapshot().attemptNumber());
+    }
+
+    @Test
+    void sustainedPlaybackResetsAutomaticBackoff() {
+        RadioSession session = new RadioSession();
+        RadioFailure failure = RadioFailure.recoverable(
+                RadioFailure.Code.READ_TIMEOUT, "Read timed out", null);
+        RadioSession.Attempt first = session.start("https://radio.example/live");
+        RadioSession.ReconnectWait firstWait = session.scheduleReconnect(
+                first, failure, 0L, NO_JITTER).orElseThrow();
+        RadioSession.Attempt second = session.retry(firstWait).orElseThrow();
+        assertTrue(session.advance(second, RadioPlaybackState.CONNECTING, 5_000L));
+        assertTrue(session.advance(second, RadioPlaybackState.BUFFERING, 5_000L));
+        assertTrue(session.advance(second, RadioPlaybackState.PLAYING, 5_000L));
+
+        RadioSession.ReconnectWait reset = session.scheduleReconnect(
+                second, failure, 35_000L, NO_JITTER).orElseThrow();
+
+        assertEquals(1, reset.attemptNumber());
+        assertEquals(36_000L, reset.retryAtMillis());
+        assertEquals(second.generation() + 1, session.retry(reset).orElseThrow().generation());
+        assertEquals(2, session.snapshot().attemptNumber());
+    }
+
+    @Test
+    void manualRetryResetsBackoffAndCancelsTheScheduledWait() {
+        RadioSession session = new RadioSession();
+        RadioFailure failure = RadioFailure.recoverable(
+                RadioFailure.Code.CONNECT_TIMEOUT, "Connection timed out", null);
+        RadioSession.Attempt first = session.start("https://radio.example/live");
+        RadioSession.ReconnectWait firstWait = session.scheduleReconnect(
+                first, failure, 0L, NO_JITTER).orElseThrow();
+        RadioSession.Attempt second = session.retry(firstWait).orElseThrow();
+        RadioSession.ReconnectWait secondWait = session.scheduleReconnect(
+                second, failure, 1_000L, NO_JITTER).orElseThrow();
+
+        RadioSession.Attempt manual = session.retry(second.generation()).orElseThrow();
+
+        assertTrue(secondWait.cancellation().isCancelled());
+        assertEquals(1, session.snapshot().attemptNumber());
+        assertEquals(-1L, session.snapshot().nextRetryAtMillis());
+        assertTrue(session.retry(secondWait).isEmpty());
+        assertFalse(manual.cancellation().isCancelled());
     }
 
     @Test

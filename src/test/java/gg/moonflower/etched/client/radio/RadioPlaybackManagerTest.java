@@ -1,6 +1,7 @@
 package gg.moonflower.etched.client.radio;
 
 import gg.moonflower.etched.common.radio.RadioConfiguration;
+import gg.moonflower.etched.client.radio.net.RadioTransportException;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -14,6 +15,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.RejectedExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -22,6 +25,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RadioPlaybackManagerTest {
+
+    private static final RadioReconnectPolicy NO_JITTER = new RadioReconnectPolicy(
+            new long[]{1_000L, 2_000L, 5_000L, 10_000L, 20_000L, 30_000L},
+            30_000L, 0.0D, () -> 0.5D);
 
     static {
         SharedConstants.tryDetectVersion();
@@ -253,19 +260,21 @@ class RadioPlaybackManagerTest {
     }
 
     @Test
-    void startFailureLeavesTheRadioRetryableAndClearsEffects() {
+    void initialStartFailureUsesReconnectClassificationAndCanBeRetried() {
         RecordingSessionDriver sessions = new RecordingSessionDriver();
         sessions.throwOnStart = true;
         RecordingEffects effects = new RecordingEffects();
         RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions, effects);
         RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
 
-        assertThrows(IllegalStateException.class, () -> manager.update(key, ENABLED));
-
-        assertTrue(manager.getConfiguration(key).isEmpty());
-        assertEquals(List.of(key), effects.stopped);
-        sessions.throwOnStart = false;
         assertTrue(manager.update(key, ENABLED));
+
+        assertEquals(RadioPlaybackState.FAILED,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertEquals(ENABLED, manager.getConfiguration(key).orElseThrow());
+        assertEquals(List.of(key), sessions.aborted);
+        sessions.throwOnStart = false;
+        assertTrue(manager.retry(key));
         assertEquals(1, sessions.started.size());
     }
 
@@ -285,6 +294,272 @@ class RadioPlaybackManagerTest {
         assertEquals(Set.of(first, second), new HashSet<>(effects.stopped));
         assertTrue(manager.getConfiguration(first).isEmpty());
         assertTrue(manager.getConfiguration(second).isEmpty());
+    }
+
+    @Test
+    void recoverableSessionFailureStartsAnAutomaticRetry() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RecordingEffects effects = new RecordingEffects();
+        ManualRetryScheduler scheduler = new ManualRetryScheduler();
+        AtomicLong clock = new AtomicLong(10_000L);
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, clock::get, Runnable::run, scheduler);
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 1, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, effects, reconnects, connections);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        manager.update(key, ENABLED);
+        StartedSession first = sessions.started.get(0);
+
+        first.events().failure(new RadioTransportException(
+                RadioFailure.Code.CONNECT_TIMEOUT, true, "Timed out", null));
+
+        assertEquals(RadioPlaybackState.RECONNECT_WAIT,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertEquals(RadioPlaybackState.RECONNECT_WAIT,
+                effects.updated.get(effects.updated.size() - 1).snapshot().state());
+        scheduler.fire();
+
+        assertEquals(2, sessions.started.size());
+        assertEquals(2, manager.getSessionSnapshot(key).orElseThrow().attemptNumber());
+        assertEquals(RadioPlaybackState.RESOLVING,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        first.events().failure(new RadioTransportException(
+                RadioFailure.Code.READ_TIMEOUT, true, "Stale", null));
+        assertEquals(1, scheduler.tasks.size());
+        assertEquals(1, connections.activeCount());
+    }
+
+    @Test
+    void explicitRetryRestartsTheSameFailedConfigurationAndResetsBackoff() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        ManualRetryScheduler scheduler = new ManualRetryScheduler();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, scheduler);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        manager.update(key, ENABLED);
+        StartedSession first = sessions.started.get(0);
+        first.events().failure(new java.io.IOException("Invalid audio"));
+
+        assertEquals(RadioPlaybackState.FAILED,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertTrue(manager.retry(key));
+
+        assertEquals(2, sessions.started.size());
+        assertEquals(first.configuration(), sessions.started.get(1).configuration());
+        assertEquals(1, manager.getSessionSnapshot(key).orElseThrow().attemptNumber());
+        assertFalse(manager.retry(key));
+    }
+
+    @Test
+    void managerAppliesConnectionAdmissionToInitialAttemptsAndRetries() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        ManualRetryScheduler retryScheduler = new ManualRetryScheduler();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, retryScheduler);
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 0, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey first = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey second = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+
+        manager.update(first, ENABLED);
+        manager.update(second, ENABLED);
+
+        assertEquals(1, sessions.started.size());
+        assertEquals(RadioPlaybackState.RECONNECT_WAIT,
+                manager.getSessionSnapshot(second).orElseThrow().state());
+        assertEquals(RadioFailure.Code.RESOURCE_LIMIT,
+                manager.getSessionSnapshot(second).orElseThrow().failure().code());
+
+        manager.remove(first);
+        retryScheduler.fire();
+
+        assertEquals(2, sessions.started.size());
+        assertEquals(second, sessions.started.get(1).key());
+        assertEquals(1, connections.activeCount());
+    }
+
+    @Test
+    void detachedSessionCallbacksCannotAffectReplacementWithSameGeneration() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RecordingEffects effects = new RecordingEffects();
+        ManualRetryScheduler scheduler = new ManualRetryScheduler();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, scheduler);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, effects, reconnects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        manager.update(key, ENABLED);
+        StartedSession detached = sessions.started.get(0);
+        RadioConfiguration replacement = new RadioConfiguration("https://radio.example/new", false);
+        manager.update(key, replacement);
+        StartedSession current = sessions.started.get(1);
+        int updates = effects.updated.size();
+
+        detached.events().progress(RadioPlaybackState.CONNECTING);
+        detached.events().failure(new RadioTransportException(
+                RadioFailure.Code.CONNECT_TIMEOUT, true, "Late", null));
+        detached.events().termination(new gg.moonflower.etched.client.radio.stream.RadioAudioStream.Termination(
+                gg.moonflower.etched.client.radio.stream.RadioAudioStream.TerminalState.EOF, null));
+        detached.events().soundEngineStopped();
+
+        assertEquals(detached.attempt().generation(), current.attempt().generation());
+        assertEquals(RadioPlaybackState.RESOLVING,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertEquals(updates, effects.updated.size());
+        assertTrue(scheduler.tasks.isEmpty());
+    }
+
+    @Test
+    void shutdownCancelsPendingRetriesAndClosesTheirScheduler() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        ManualRetryScheduler scheduler = new ManualRetryScheduler();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, scheduler);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        manager.update(key, ENABLED);
+        sessions.started.get(0).events().failure(new RadioTransportException(
+                RadioFailure.Code.CONNECT_TIMEOUT, true, "Timed out", null));
+
+        manager.shutdown();
+
+        assertTrue(scheduler.closed);
+        assertTrue(scheduler.tasks.get(0).cancelled);
+        assertTrue(manager.getConfiguration(key).isEmpty());
+    }
+
+    @Test
+    void shutdownRejectsLateLegacyUpdatesAndTicks() {
+        RecordingDriver playback = new RecordingDriver();
+        RadioPlaybackManager manager = new RadioPlaybackManager(playback);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.shutdown();
+
+        assertFalse(manager.update(key, ENABLED));
+        manager.tick(key, ENABLED);
+        assertTrue(playback.applied.isEmpty());
+        assertTrue(playback.ticked.isEmpty());
+        assertTrue(manager.getConfiguration(key).isEmpty());
+    }
+
+    @Test
+    void backendStopsBeforeItsConnectionSlotIsReused() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 1, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey first = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey second = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+        manager.update(first, ENABLED);
+        manager.update(second, ENABLED);
+
+        manager.remove(first);
+
+        assertEquals(List.of("start:" + first, "stop:" + first, "start:" + second), sessions.lifecycle);
+        assertEquals(1, sessions.maximumOpen);
+    }
+
+    @Test
+    void partialStartIsAbortedBeforeAdmissionSlotIsReleased() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        sessions.throwOnStart = true;
+        sessions.openBeforeThrow = true;
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 0, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey first = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey second = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+
+        manager.update(first, ENABLED);
+        sessions.throwOnStart = false;
+        manager.update(second, ENABLED);
+
+        assertTrue(sessions.open.contains(second));
+        assertFalse(sessions.open.contains(first));
+        assertEquals(1, sessions.maximumOpen);
+        assertEquals(List.of(first), sessions.aborted);
+    }
+
+    @Test
+    void initialWorkerRejectionUsesRecoverableBackoff() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        sessions.throwOnStart = true;
+        sessions.startFailure = new RejectedExecutionException("busy");
+        ManualRetryScheduler scheduler = new ManualRetryScheduler();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, scheduler);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.update(key, ENABLED);
+
+        assertEquals(RadioPlaybackState.RECONNECT_WAIT,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertEquals(RadioFailure.Code.RESOURCE_LIMIT,
+                manager.getSessionSnapshot(key).orElseThrow().failure().code());
+        assertEquals(1, scheduler.tasks.size());
+        sessions.throwOnStart = false;
+        scheduler.fire();
+        assertEquals(1, sessions.started.size());
+    }
+
+    @Test
+    void ownerDispatchFailureCannotOrphanQueuedSession() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        AtomicIntegerExecutor owner = new AtomicIntegerExecutor();
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 1, owner);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey first = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey second = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+        manager.update(first, ENABLED);
+        manager.update(second, ENABLED);
+        owner.reject = true;
+
+        manager.remove(first);
+
+        assertEquals(RadioPlaybackState.FAILED,
+                manager.getSessionSnapshot(second).orElseThrow().state());
+        assertEquals(RadioFailure.Code.RESOURCE_LIMIT,
+                manager.getSessionSnapshot(second).orElseThrow().failure().code());
+    }
+
+    @Test
+    void abortFailureCannotPreventScheduledReconnect() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        ManualRetryScheduler scheduler = new ManualRetryScheduler();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, scheduler);
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 0, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        manager.update(key, ENABLED);
+        sessions.throwOnAbort = true;
+
+        assertThrows(IllegalStateException.class, () -> sessions.started.get(0).events().failure(
+                new RadioTransportException(RadioFailure.Code.READ_TIMEOUT, true, "Timed out", null)));
+
+        assertEquals(RadioPlaybackState.RECONNECT_WAIT,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertEquals(1, scheduler.tasks.size());
+        assertEquals(0, connections.activeCount());
+        sessions.throwOnAbort = false;
+        scheduler.fire();
+        assertEquals(2, sessions.started.size());
     }
 
     private static ResourceKey<Level> dimension(String path) {
@@ -329,16 +604,31 @@ class RadioPlaybackManagerTest {
 
         private final List<StartedSession> started = new ArrayList<>();
         private final List<RadioKey> stopped = new ArrayList<>();
+        private final List<RadioKey> aborted = new ArrayList<>();
+        private final List<String> lifecycle = new ArrayList<>();
+        private final Set<RadioKey> open = new HashSet<>();
         private boolean throwOnStart;
+        private boolean openBeforeThrow;
         private boolean throwOnStop;
+        private boolean throwOnAbort;
+        private int maximumOpen;
+        private RuntimeException startFailure;
 
         @Override
         public void start(RadioKey key, RadioConfiguration configuration, RadioSession session,
-                          RadioSession.Attempt attempt) {
+                          RadioSession.Attempt attempt, RadioPlaybackManager.SessionEvents events) {
             if (this.throwOnStart) {
-                throw new IllegalStateException("start failed");
+                if (this.openBeforeThrow) {
+                    this.open.add(key);
+                    this.maximumOpen = Math.max(this.maximumOpen, this.open.size());
+                }
+                throw this.startFailure == null
+                        ? new IllegalStateException("start failed") : this.startFailure;
             }
-            this.started.add(new StartedSession(key, configuration, session, attempt));
+            this.started.add(new StartedSession(key, configuration, session, attempt, events));
+            this.open.add(key);
+            this.maximumOpen = Math.max(this.maximumOpen, this.open.size());
+            this.lifecycle.add("start:" + key);
         }
 
         @Override
@@ -351,8 +641,19 @@ class RadioPlaybackManagerTest {
                 assertTrue(startedSession.attempt().cancellation().isCancelled());
             }
             this.stopped.add(key);
+            this.open.remove(key);
+            this.lifecycle.add("stop:" + key);
             if (this.throwOnStop) {
                 throw new IllegalStateException("stop failed");
+            }
+        }
+
+        @Override
+        public void abort(RadioKey key, RadioSession session, RadioSession.Attempt attempt) {
+            this.aborted.add(key);
+            this.open.remove(key);
+            if (this.throwOnAbort) {
+                throw new IllegalStateException("abort failed");
             }
         }
     }
@@ -373,11 +674,61 @@ class RadioPlaybackManagerTest {
         }
     }
 
+    private static final class ManualRetryScheduler implements RadioReconnectController.RetryScheduler {
+
+        private final List<ScheduledRetry> tasks = new ArrayList<>();
+        private boolean closed;
+
+        @Override
+        public RadioReconnectController.Cancellable schedule(Runnable task, long delayMillis) {
+            ScheduledRetry retry = new ScheduledRetry(task, delayMillis);
+            this.tasks.add(retry);
+            return () -> retry.cancelled = true;
+        }
+
+        private void fire() {
+            ScheduledRetry retry = this.tasks.get(this.tasks.size() - 1);
+            if (!retry.cancelled) {
+                retry.task.run();
+            }
+        }
+
+        @Override
+        public void close() {
+            this.closed = true;
+        }
+    }
+
+    private static final class ScheduledRetry {
+
+        private final Runnable task;
+        private final long delayMillis;
+        private boolean cancelled;
+
+        private ScheduledRetry(Runnable task, long delayMillis) {
+            this.task = task;
+            this.delayMillis = delayMillis;
+        }
+    }
+
+    private static final class AtomicIntegerExecutor implements java.util.concurrent.Executor {
+
+        private boolean reject;
+
+        @Override
+        public void execute(Runnable command) {
+            if (this.reject) {
+                throw new RejectedExecutionException("closed");
+            }
+            command.run();
+        }
+    }
+
     private record AppliedConfiguration(RadioKey key, RadioConfiguration configuration) {
     }
 
     private record StartedSession(RadioKey key, RadioConfiguration configuration, RadioSession session,
-                                  RadioSession.Attempt attempt) {
+                                  RadioSession.Attempt attempt, RadioPlaybackManager.SessionEvents events) {
     }
 
     private record EffectUpdate(RadioKey key, RadioSession.Snapshot snapshot) {
