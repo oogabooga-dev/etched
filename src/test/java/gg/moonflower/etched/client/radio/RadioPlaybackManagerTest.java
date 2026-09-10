@@ -405,6 +405,7 @@ class RadioPlaybackManagerTest {
         detached.events().termination(new gg.moonflower.etched.client.radio.stream.RadioAudioStream.Termination(
                 gg.moonflower.etched.client.radio.stream.RadioAudioStream.TerminalState.EOF, null));
         detached.events().soundEngineStopped();
+        detached.events().completion();
 
         assertEquals(detached.attempt().generation(), current.attempt().generation());
         assertEquals(RadioPlaybackState.RESOLVING,
@@ -431,6 +432,37 @@ class RadioPlaybackManagerTest {
         assertTrue(scheduler.closed);
         assertTrue(scheduler.tasks.get(0).cancelled);
         assertTrue(manager.getConfiguration(key).isEmpty());
+        assertTrue(sessions.shutdown);
+    }
+
+    @Test
+    void finiteCompletionClosesBackendBeforeReusingAdmissionLease() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 1, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey first = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey second = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+        manager.update(first, ENABLED);
+        manager.update(second, ENABLED);
+        StartedSession started = sessions.started.get(0);
+        started.events().progress(RadioPlaybackState.CONNECTING);
+        started.events().progress(RadioPlaybackState.BUFFERING);
+        started.events().progress(RadioPlaybackState.PLAYING);
+
+        started.events().completion();
+
+        assertEquals(RadioPlaybackState.STOPPED,
+                manager.getSessionSnapshot(first).orElseThrow().state());
+        assertEquals(List.of("start:" + first, "abort:" + first, "start:" + second),
+                sessions.lifecycle);
+        assertEquals(1, sessions.maximumOpen);
+        assertEquals(1, connections.activeCount());
+
+        started.events().completion();
+        assertEquals(1, sessions.aborted.size());
     }
 
     @Test
@@ -538,6 +570,28 @@ class RadioPlaybackManagerTest {
     }
 
     @Test
+    void sessionOwnerFailureClosesBackendAndReleasesAdmissionLease() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RadioReconnectController reconnects = new RadioReconnectController(
+                NO_JITTER, () -> 0L, Runnable::run, new ManualRetryScheduler());
+        RadioConnectionScheduler connections = new RadioConnectionScheduler(1, 0, Runnable::run);
+        RadioPlaybackManager manager = new RadioPlaybackManager(
+                new RecordingDriver(), sessions, new RecordingEffects(), reconnects, connections);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        manager.update(key, ENABLED);
+
+        sessions.started.get(0).events().ownerUnavailable(
+                new RejectedExecutionException("client executor stopped"));
+
+        assertEquals(RadioPlaybackState.FAILED,
+                manager.getSessionSnapshot(key).orElseThrow().state());
+        assertEquals(RadioFailure.Code.RESOURCE_LIMIT,
+                manager.getSessionSnapshot(key).orElseThrow().failure().code());
+        assertEquals(List.of(key), sessions.aborted);
+        assertEquals(0, connections.activeCount());
+    }
+
+    @Test
     void abortFailureCannotPreventScheduledReconnect() {
         RecordingSessionDriver sessions = new RecordingSessionDriver();
         ManualRetryScheduler scheduler = new ManualRetryScheduler();
@@ -611,6 +665,7 @@ class RadioPlaybackManagerTest {
         private boolean openBeforeThrow;
         private boolean throwOnStop;
         private boolean throwOnAbort;
+        private boolean shutdown;
         private int maximumOpen;
         private RuntimeException startFailure;
 
@@ -652,9 +707,15 @@ class RadioPlaybackManagerTest {
         public void abort(RadioKey key, RadioSession session, RadioSession.Attempt attempt) {
             this.aborted.add(key);
             this.open.remove(key);
+            this.lifecycle.add("abort:" + key);
             if (this.throwOnAbort) {
                 throw new IllegalStateException("abort failed");
             }
+        }
+
+        @Override
+        public void shutdown() {
+            this.shutdown = true;
         }
     }
 

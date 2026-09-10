@@ -10,11 +10,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -49,17 +44,17 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                                                 ResolutionState state, int playlistDepth,
                                                 List<URI> stationEndpoints) throws RadioSourceException {
         context.cancellation().throwIfCancelled();
-        consumeSteps(state, 1, context.limits());
+        context.budget().consumeSteps(1);
 
         RadioHttpRequest request = RadioHttpRequest.audio(input);
-        request = request.withMaxRedirects(context.limits().maxResolutionSteps() - state.steps);
+        request = request.withMaxRedirects(context.budget().remainingSteps());
         RadioHttpResponse response;
         try {
             response = context.transport().execute(request, context.cancellation());
         } catch (RadioTransportException exception) {
-            consumeSteps(state, exception.redirectCount(), context.limits());
+            context.budget().consumeSteps(exception.redirectCount());
             if (exception.code() == RadioFailure.Code.TOO_MANY_REDIRECTS
-                    && state.steps == context.limits().maxResolutionSteps()) {
+                    && context.budget().remainingSteps() == 0) {
                 throw failure(RadioFailure.Code.RESOURCE_LIMIT, false,
                         "Radio source resolution exceeded the configured step limit", exception);
             }
@@ -67,8 +62,8 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
         }
         boolean transferred = false;
         try {
-            consumeSteps(state, response.redirectCount(), context.limits());
-            requireSuccessfulStatus(response);
+            context.budget().consumeSteps(response.redirectCount());
+            RadioHttpStatus.requireSuccess(response, "Radio host");
             byte[] prefix = readPrefix(response, input, context);
             SourceKind kind = classify(response, input, prefix);
             switch (kind) {
@@ -99,7 +94,7 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                         List<RadioPlaylistEntry> entries = kind == SourceKind.M3U
                                 ? M3uRadioPlaylistParser.parse(playlistUri, body, context.limits())
                                 : PlsRadioPlaylistParser.parse(playlistUri, body, context.limits());
-                        addEntries(state, entries.size(), context.limits());
+                        context.budget().consumeEntries(entries.size());
                         List<URI> endpoints = entries.stream().map(RadioPlaylistEntry::uri).toList();
                         validateAllEntries(endpoints, context);
                         response.close();
@@ -407,59 +402,6 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
                 ? path.substring(dot + 1).toLowerCase(Locale.ROOT) : "";
     }
 
-    private static void requireSuccessfulStatus(RadioHttpResponse response) throws RadioSourceException {
-        int status = response.statusCode();
-        if (status == 200) {
-            return;
-        }
-        boolean recoverable = status == 408 || status == 429 || status == 500
-                || status == 502 || status == 503 || status == 504;
-        long retryAfterMillis = status == 429 ? retryAfterMillis(response) : RadioFailure.NO_RETRY_AFTER;
-        throw new RadioSourceException(RadioFailure.Code.HTTP_STATUS, recoverable,
-                "Radio host returned HTTP status " + status, null, retryAfterMillis);
-    }
-
-    private static long retryAfterMillis(RadioHttpResponse response) {
-        String value = response.firstHeader("retry-after").orElse(null);
-        if (value == null) {
-            return RadioFailure.NO_RETRY_AFTER;
-        }
-        try {
-            long seconds = Long.parseLong(value.trim());
-            if (seconds < 0) {
-                return RadioFailure.NO_RETRY_AFTER;
-            }
-            return Math.min(seconds, 30L) * 1_000L;
-        } catch (NumberFormatException ignored) {
-            try {
-                Instant retryAt = ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME)
-                        .toInstant();
-                long delay = Duration.between(Instant.now(), retryAt).toMillis();
-                return Math.max(0L, Math.min(delay, 30_000L));
-            } catch (DateTimeParseException | ArithmeticException invalidDate) {
-                return RadioFailure.NO_RETRY_AFTER;
-            }
-        }
-    }
-
-    private static void addEntries(ResolutionState state, int count, RadioResolveLimits limits)
-            throws RadioSourceException {
-        if (count > limits.maxPlaylistEntries() - state.entries) {
-            throw failure(RadioFailure.Code.RESOURCE_LIMIT, false,
-                    "Radio source resolution exceeded the playlist entry limit", null);
-        }
-        state.entries += count;
-    }
-
-    private static void consumeSteps(ResolutionState state, int count, RadioResolveLimits limits)
-            throws RadioSourceException {
-        if (count > limits.maxResolutionSteps() - state.steps) {
-            throw failure(RadioFailure.Code.RESOURCE_LIMIT, false,
-                    "Radio source resolution exceeded the configured step limit", null);
-        }
-        state.steps += count;
-    }
-
     private static RadioSourceException failure(RadioFailure.Code code, boolean recoverable,
                                                 String message, Throwable cause) {
         return new RadioSourceException(code, recoverable, message, cause);
@@ -478,7 +420,5 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
     private static final class ResolutionState {
 
         private final Set<URI> playlists = new HashSet<>();
-        private int steps;
-        private int entries;
     }
 }
