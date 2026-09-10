@@ -12,7 +12,6 @@ import gg.moonflower.etched.core.registry.EtchedItems;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.PacketDistributor;
@@ -23,16 +22,18 @@ import org.jetbrains.annotations.ApiStatus;
 public class EtchedServerPlayPacketHandler {
 
     public static void handleSetUrl(ServerboundSetUrlPacket pkt, NetworkEvent.Context ctx) {
-        Player player = ctx.getSender();
+        ServerPlayer player = ctx.getSender();
         if (player == null) {
             return;
         }
 
-        if (player.containerMenu instanceof EtchingMenu menu) {
-            ctx.enqueueWork(() -> menu.setUrl(pkt.url()));
-        } else if (player.containerMenu instanceof RadioMenu menu) {
-            ctx.enqueueWork(() -> menu.setUrl(pkt.url()));
-        }
+        ctx.enqueueWork(() -> {
+            if (player.containerMenu instanceof EtchingMenu menu) {
+                menu.setUrl(pkt.url());
+            } else if (player.containerMenu instanceof RadioMenu menu && menu.stillValid(player)) {
+                menu.submitUrl(pkt.url());
+            }
+        });
     }
 
     public static void handleEditMusicLabel(ServerboundEditMusicLabelPacket pkt, NetworkEvent.Context ctx) {

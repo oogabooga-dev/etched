@@ -348,10 +348,20 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         }
         if (termination.state() == RadioAudioStream.TerminalState.EOF
                 && active.program.kind() == RadioSourceProgram.Kind.SERVICE_TRACKS) {
+            boolean advance;
             synchronized (this.lock) {
                 if (this.isCurrentTrackLocked(active, track) && !track.terminal) {
                     track.eof = true;
+                    advance = track.soundStopReported;
+                    if (advance) {
+                        track.terminal = true;
+                    }
+                } else {
+                    advance = false;
                 }
+            }
+            if (advance) {
+                this.dispatch(() -> this.finishServiceTrack(active, track), active);
             }
             return;
         }
@@ -373,14 +383,25 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
     private void soundStopped(ActiveAttempt active, TrackPlayback track) {
         boolean expectedEof;
         synchronized (this.lock) {
-            if (!this.isCurrentTrackLocked(active, track) || track.terminal) {
+            if (!this.isCurrentTrackLocked(active, track) || track.terminal || track.soundStopReported) {
                 return;
             }
             expectedEof = track.eof;
-            track.terminal = true;
+            if (expectedEof) {
+                track.terminal = true;
+            } else {
+                track.soundStopReported = true;
+            }
         }
         if (!expectedEof) {
             active.events.soundEngineStopped();
+            return;
+        }
+        this.finishServiceTrack(active, track);
+    }
+
+    private void finishServiceTrack(ActiveAttempt active, TrackPlayback track) {
+        if (!this.isCurrentTrack(active, track)) {
             return;
         }
         int next = track.index + 1;
@@ -648,6 +669,7 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         private RadioSoundInstance sound;
         private boolean transferred;
         private boolean terminal;
+        private boolean soundStopReported;
         private boolean eof;
 
         private TrackPlayback(int index) {

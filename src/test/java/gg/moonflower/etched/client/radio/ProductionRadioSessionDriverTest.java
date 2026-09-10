@@ -171,6 +171,52 @@ class ProductionRadioSessionDriverTest {
     }
 
     @Test
+    void stationDecoderTerminationCanSupersedeAnEarlierSoundStop() throws Exception {
+        RadioSourceProgram program = this.program(RadioSourceProgram.Kind.STATION,
+                List.of(this.track("one")));
+        FakeSoundOutput sounds = new FakeSoundOutput(false);
+        ProductionRadioSessionDriver driver = this.driver(fixed(program), sounds);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.baseUri.resolve("/station-race").toString());
+        RecordingEvents events = new RecordingEvents(session, attempt);
+
+        driver.start(KEY, new RadioConfiguration(attempt.source(), false), session, attempt, events);
+        await(() -> sounds.audio.size() == 1);
+        sounds.played.get(0).onStop();
+        assertEquals(1, events.soundStops.size());
+        drain(sounds.audio.get(0));
+        await(() -> events.terminations.size() == 1);
+
+        assertEquals(RadioAudioStream.TerminalState.EOF, events.terminations.get(0).state());
+        session.stop();
+        driver.stop(KEY, session);
+        driver.shutdown();
+    }
+
+    @Test
+    void serviceTrackAdvancesWhenSoundStopArrivesBeforeDecoderEof() throws Exception {
+        RadioSourceProgram program = this.program(RadioSourceProgram.Kind.SERVICE_TRACKS,
+                List.of(this.track("one"), this.track("two")));
+        FakeSoundOutput sounds = new FakeSoundOutput(false);
+        ProductionRadioSessionDriver driver = this.driver(fixed(program), sounds);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.baseUri.resolve("/album-race").toString());
+        RecordingEvents events = new RecordingEvents(session, attempt);
+
+        driver.start(KEY, new RadioConfiguration(attempt.source(), false), session, attempt, events);
+        await(() -> sounds.audio.size() == 1);
+        sounds.played.get(0).onStop();
+        drain(sounds.audio.get(0));
+        await(() -> sounds.audio.size() == 2);
+
+        assertEquals(List.of("one", "two"), this.requests);
+        assertEquals(1, events.soundStops.size());
+        session.stop();
+        driver.stop(KEY, session);
+        driver.shutdown();
+    }
+
+    @Test
     void cancellationSuppressesAResolverThatFinishesLate() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);

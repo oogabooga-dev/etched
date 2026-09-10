@@ -293,12 +293,8 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
                     @Override
                     public void sequenceAdvance(Runnable continuation) {
-                        reconnects.execute(() -> {
-                            if (radio.session().advanceToNextTrack(attempt)) {
-                                updateEffects(key, radio);
-                                continuation.run();
-                            }
-                        });
+                        reconnects.sequenceAdvance(radio.session(), attempt, continuation,
+                                () -> updateEffects(key, radio));
                     }
 
                     @Override
@@ -350,9 +346,10 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     private void terminalStateChanged(RadioKey key, ManagedRadio radio, RadioSession.Attempt attempt) {
         RadioSession.Snapshot snapshot = radio.session().snapshot();
         if (snapshot.failure() != null) {
+            RadioFailure failure = snapshot.failure();
             LOGGER.warn("Radio {} generation {} for host {} ended with {} (recoverable={}): {}",
-                    key, attempt.generation(), sourceHost(attempt.source()), snapshot.failure().code(),
-                    snapshot.failure().recoverable(), snapshot.failure().message());
+                    key, attempt.generation(), sourceHost(attempt.source()), failure.code(),
+                    failure.recoverable(), failure.message(), failure.cause());
         }
         try {
             if (radio.ownsAttempt(attempt)) {

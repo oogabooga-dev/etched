@@ -1,5 +1,6 @@
 package gg.moonflower.etched.common.network;
 
+import gg.moonflower.etched.common.menu.RadioMenu;
 import gg.moonflower.etched.common.network.play.*;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -43,6 +44,11 @@ class EtchedMessagesCompatibilityTest {
     @Test
     void preservesServerboundRadioUrlEncoding() throws Exception {
         assertLegacyUrlEncoding(new ServerboundSetUrlPacket(RADIO_URL));
+    }
+
+    @Test
+    void preservesLegacyRadioMenuSetUrlDescriptor() throws Exception {
+        assertEquals(void.class, RadioMenu.class.getMethod("setUrl", String.class).getReturnType());
     }
 
     @Test

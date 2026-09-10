@@ -21,14 +21,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Radio-local streaming MP3 decoder backed by JLayer. */
 public final class RadioMp3AudioStream extends AbstractRadioAudioStream {
 
-    private static final int MAX_PCM_READ = 32 * 1024;
+    private static final int MAX_PCM_READ = 1024 * 1024;
     private static final int MAX_ID3_BYTES = 1024 * 1024;
+    private static final int MAX_EMPTY_FRAMES = 32;
 
     private final Bitstream bitstream;
     private final Decoder decoder;
     private final AtomicBoolean closed;
     private AudioFormat format;
     private ByteBuffer pending;
+    private boolean eof;
 
     public RadioMp3AudioStream(InputStream input) throws IOException {
         Objects.requireNonNull(input, "input");
@@ -56,13 +58,13 @@ public final class RadioMp3AudioStream extends AbstractRadioAudioStream {
     }
 
     @Override
-    public ByteBuffer read(int requestedBytes) throws IOException {
+    public synchronized ByteBuffer read(int requestedBytes) throws IOException {
         this.requireOpen();
         if (requestedBytes <= 0) {
             return emptyBuffer();
         }
         try {
-            if (!this.pending.hasRemaining() && !this.decodeFrame()) {
+            if (this.eof && !this.pending.hasRemaining()) {
                 this.complete(TerminalState.EOF);
                 return emptyBuffer();
             }
@@ -73,15 +75,22 @@ public final class RadioMp3AudioStream extends AbstractRadioAudioStream {
             if (limit == 0) {
                 limit = frameSize;
             }
-            int copied = Math.min(limit, this.pending.remaining());
-            copied -= copied % frameSize;
-
-            ByteBuffer output = ByteBuffer.allocateDirect(copied).order(ByteOrder.LITTLE_ENDIAN);
-            ByteBuffer slice = this.pending.slice();
-            slice.limit(copied);
-            output.put(slice);
+            ByteBuffer output = ByteBuffer.allocateDirect(limit).order(ByteOrder.LITTLE_ENDIAN);
+            while (output.hasRemaining()) {
+                if (!this.pending.hasRemaining()) {
+                    if (!this.decodeFrame()) {
+                        this.eof = true;
+                        break;
+                    }
+                }
+                int copied = Math.min(output.remaining(), this.pending.remaining());
+                copied -= copied % frameSize;
+                ByteBuffer slice = this.pending.slice();
+                slice.limit(copied);
+                output.put(slice);
+                this.pending.position(this.pending.position() + copied);
+            }
             output.flip();
-            this.pending.position(this.pending.position() + copied);
             return output;
         } catch (CancellationException exception) {
             this.complete(TerminalState.CANCELLED);
@@ -97,7 +106,7 @@ public final class RadioMp3AudioStream extends AbstractRadioAudioStream {
     }
 
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         if (!this.closed.compareAndSet(false, true)) {
             return;
         }
@@ -112,50 +121,52 @@ public final class RadioMp3AudioStream extends AbstractRadioAudioStream {
     }
 
     private boolean decodeFrame() throws IOException {
-        Header header;
-        try {
-            header = this.bitstream.readFrame();
-            if (header == null) {
-                this.pending = emptyBuffer();
-                return false;
-            }
+        for (int emptyFrames = 0; emptyFrames <= MAX_EMPTY_FRAMES; emptyFrames++) {
+            try {
+                Header header = this.bitstream.readFrame();
+                if (header == null) {
+                    this.pending = emptyBuffer();
+                    return false;
+                }
 
-            int frameChannels = header.mode() == Header.SINGLE_CHANNEL ? 1 : 2;
-            int frameFrequency = header.frequency();
-            if (this.format == null) {
-                this.format = new AudioFormat(frameFrequency, Short.SIZE, frameChannels, true, false);
-            } else if (this.format.getSampleRate() != frameFrequency
-                    || this.format.getChannels() != frameChannels) {
-                throw new IOException("MP3 stream changed its audio format");
-            }
+                int frameChannels = header.mode() == Header.SINGLE_CHANNEL ? 1 : 2;
+                int frameFrequency = header.frequency();
+                if (this.format == null) {
+                    this.format = new AudioFormat(frameFrequency, Short.SIZE, frameChannels, true, false);
+                } else if (this.format.getSampleRate() != frameFrequency
+                        || this.format.getChannels() != frameChannels) {
+                    throw new IOException("MP3 stream changed its audio format");
+                }
 
-            Obuffer output = this.decoder.decodeFrame(header, this.bitstream);
-            if (!(output instanceof SampleBuffer samples)) {
-                throw new IOException("JLayer returned an unsupported output buffer");
-            }
-            if (samples.getSampleFrequency() != frameFrequency
-                    || samples.getChannelCount() != frameChannels) {
-                throw new IOException("JLayer returned PCM in an unexpected format");
-            }
+                Obuffer output = this.decoder.decodeFrame(header, this.bitstream);
+                if (!(output instanceof SampleBuffer samples)) {
+                    throw new IOException("JLayer returned an unsupported output buffer");
+                }
+                if (samples.getSampleFrequency() != frameFrequency
+                        || samples.getChannelCount() != frameChannels) {
+                    throw new IOException("JLayer returned PCM in an unexpected format");
+                }
 
-            int sampleCount = samples.getBufferLength();
-            if (sampleCount <= 0) {
-                throw new IOException("JLayer returned an empty MP3 frame");
+                int sampleCount = samples.getBufferLength();
+                if (sampleCount == 0) {
+                    continue;
+                }
+                ByteBuffer decoded = ByteBuffer.allocate(sampleCount * Short.BYTES)
+                        .order(ByteOrder.LITTLE_ENDIAN);
+                short[] source = samples.getBuffer();
+                for (int i = 0; i < sampleCount; i++) {
+                    decoded.putShort(source[i]);
+                }
+                decoded.flip();
+                this.pending = decoded;
+                return true;
+            } catch (JavaLayerException exception) {
+                throw asIOException("Could not decode MP3 frame", exception);
+            } finally {
+                this.bitstream.closeFrame();
             }
-            ByteBuffer decoded = ByteBuffer.allocate(sampleCount * Short.BYTES)
-                    .order(ByteOrder.LITTLE_ENDIAN);
-            short[] source = samples.getBuffer();
-            for (int i = 0; i < sampleCount; i++) {
-                decoded.putShort(source[i]);
-            }
-            decoded.flip();
-            this.pending = decoded;
-            return true;
-        } catch (JavaLayerException exception) {
-            throw asIOException("Could not decode MP3 frame", exception);
-        } finally {
-            this.bitstream.closeFrame();
         }
+        throw new IOException("MP3 stream produced too many empty frames");
     }
 
     private void requireOpen() throws IOException {

@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -45,6 +46,54 @@ class RadioMp3AudioStreamTest {
             int decodedBytes = first.remaining() + drain(stream, 513);
             assertTrue(decodedBytes > 20_000);
             assertEquals(0, decodedBytes % stream.getFormat().getFrameSize());
+        }
+    }
+
+    @Test
+    void fillsFourMinecraftStreamingBuffersAcrossMp3Frames() throws Exception {
+        try (RadioMp3AudioStream stream = new RadioMp3AudioStream(fixture("stereo-long.mp3"))) {
+            int oneSecond = (int) (stream.getFormat().getSampleRate() * stream.getFormat().getFrameSize());
+
+            for (int i = 0; i < 4; i++) {
+                ByteBuffer output = stream.read(oneSecond);
+                assertEquals(oneSecond, output.remaining());
+                assertEquals(0, output.remaining() % stream.getFormat().getFrameSize());
+            }
+        }
+    }
+
+    @Test
+    void monoWrapperFillsRequestedOutputAcrossMp3Frames() throws Exception {
+        try (RadioMonoAudioStream stream = new RadioMonoAudioStream(
+                new RadioMp3AudioStream(fixture("stereo-long.mp3")))) {
+            int oneSecond = (int) (stream.getFormat().getSampleRate() * stream.getFormat().getFrameSize());
+            ByteBuffer output = stream.read(oneSecond);
+
+            assertEquals(oneSecond, output.remaining());
+            assertEquals(0, output.remaining() % stream.getFormat().getFrameSize());
+        }
+    }
+
+    @Test
+    void startsFromAnMp3FrameThatDependsOnEarlierBitReservoirData() throws Exception {
+        InputStream midstream = fixture("stereo-long.mp3");
+        midstream.skipNBytes(461);
+
+        try (RadioMp3AudioStream stream = new RadioMp3AudioStream(midstream)) {
+            assertTrue(stream.read(16 * 1024).hasRemaining());
+        }
+    }
+
+    @Test
+    void returnsFinalPartialPcmBeforeSignalingEof() throws Exception {
+        try (RadioMp3AudioStream stream = new RadioMp3AudioStream(fixture("mono.mp3"))) {
+            ByteBuffer finalPcm = stream.read(64 * 1024);
+
+            assertTrue(finalPcm.hasRemaining());
+            assertFalse(stream.termination().toCompletableFuture().isDone());
+            assertFalse(stream.read(64 * 1024).hasRemaining());
+            assertEquals(RadioAudioStream.TerminalState.EOF,
+                    stream.termination().toCompletableFuture().join().state());
         }
     }
 
