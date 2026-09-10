@@ -17,20 +17,27 @@ import java.util.Optional;
  */
 public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
-    private static final RadioPlaybackManager INSTANCE = new RadioPlaybackManager(new LegacyRadioPlaybackDriver());
+    private static final RadioPlaybackManager INSTANCE = new RadioPlaybackManager(
+            new LegacyRadioPlaybackDriver(), SessionDriver.NOOP, new MinecraftRadioPlaybackEffects());
 
     private final Map<RadioKey, ManagedRadio> radios;
     private final PlaybackDriver playback;
     private final SessionDriver sessions;
+    private final RadioPlaybackEffects effects;
 
     RadioPlaybackManager(PlaybackDriver playback) {
-        this(playback, SessionDriver.NOOP);
+        this(playback, SessionDriver.NOOP, RadioPlaybackEffects.NOOP);
     }
 
     RadioPlaybackManager(PlaybackDriver playback, SessionDriver sessions) {
+        this(playback, sessions, RadioPlaybackEffects.NOOP);
+    }
+
+    RadioPlaybackManager(PlaybackDriver playback, SessionDriver sessions, RadioPlaybackEffects effects) {
         this.radios = new HashMap<>();
         this.playback = Objects.requireNonNull(playback, "playback");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
+        this.effects = Objects.requireNonNull(effects, "effects");
     }
 
     public static RadioPlaybackManager getInstance() {
@@ -51,15 +58,31 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
         }
 
         if (previous != null) {
+            this.radios.remove(key);
             this.stopSession(key, previous.session());
         }
         RadioSession session = new RadioSession();
-        this.radios.put(key, new ManagedRadio(configuration, session));
+        ManagedRadio radio = new ManagedRadio(configuration, session);
+        this.radios.put(key, radio);
         String source = configuration.url().trim();
-        if (!source.isEmpty() && !configuration.powered() && this.sessions.enabled()) {
-            this.sessions.start(key, configuration, session, session.start(source));
+        if (this.sessions.enabled()) {
+            if (!source.isEmpty() && !configuration.powered()) {
+                try {
+                    this.sessions.start(key, configuration, session, session.start(source));
+                } catch (RuntimeException exception) {
+                    this.radios.remove(key, radio);
+                    try {
+                        this.stopSession(key, session);
+                    } catch (RuntimeException stopException) {
+                        exception.addSuppressed(stopException);
+                    }
+                    throw exception;
+                }
+            }
+            this.effects.update(key, session.snapshot());
+        } else {
+            this.playback.apply(key, configuration);
         }
-        this.playback.apply(key, configuration);
         return true;
     }
 
@@ -75,8 +98,12 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
             return false;
         }
 
-        this.stopSession(key, removed.session());
-        this.playback.stop(key);
+        if (this.sessions.enabled()) {
+            this.stopSession(key, removed.session());
+        } else {
+            removed.session().stop();
+            this.playback.stop(key);
+        }
         return true;
     }
 
@@ -87,7 +114,15 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
 
     public void tick(RadioKey key, RadioConfiguration configuration) {
         this.update(key, configuration);
-        this.playback.tick(key, configuration);
+        if (this.sessions.enabled()) {
+            ManagedRadio radio = this.radios.get(key);
+            if (radio != null) {
+                radio.session().applyPendingStreamTitle();
+                this.effects.update(key, radio.session().snapshot());
+            }
+        } else {
+            this.playback.tick(key, configuration);
+        }
     }
 
     @Override
@@ -96,7 +131,13 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     }
 
     public boolean isPlaying(RadioKey key) {
-        return this.radios.containsKey(key) && this.playback.isPlaying(key);
+        ManagedRadio radio = this.radios.get(key);
+        if (radio == null) {
+            return false;
+        }
+        return this.sessions.enabled()
+                ? radio.session().snapshot().state() == RadioPlaybackState.PLAYING
+                : this.playback.isPlaying(key);
     }
 
     public Optional<RadioConfiguration> getConfiguration(RadioKey key) {
@@ -112,15 +153,37 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     public void clearAll() {
         ArrayList<Map.Entry<RadioKey, ManagedRadio>> entries = new ArrayList<>(this.radios.entrySet());
         this.radios.clear();
+        RuntimeException failure = null;
         for (Map.Entry<RadioKey, ManagedRadio> entry : entries) {
-            this.stopSession(entry.getKey(), entry.getValue().session());
-            this.playback.stop(entry.getKey());
+            try {
+                if (this.sessions.enabled()) {
+                    this.stopSession(entry.getKey(), entry.getValue().session());
+                } else {
+                    entry.getValue().session().stop();
+                    this.playback.stop(entry.getKey());
+                }
+            } catch (RuntimeException exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
     private void stopSession(RadioKey key, RadioSession session) {
         session.stop();
-        this.sessions.stop(key, session);
+        if (this.sessions.enabled()) {
+            try {
+                this.sessions.stop(key, session);
+            } finally {
+                this.effects.stop(key);
+            }
+        }
     }
 
     interface PlaybackDriver {

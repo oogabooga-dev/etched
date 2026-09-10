@@ -17,6 +17,8 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RadioPlaybackManagerTest {
@@ -188,6 +190,103 @@ class RadioPlaybackManagerTest {
         assertEquals(Set.of(firstKey, secondKey), new HashSet<>(sessions.stopped));
     }
 
+    @Test
+    void sessionBackendIsExclusiveAndReportsOnlyPlayingState() {
+        RecordingDriver playback = new RecordingDriver();
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RecordingEffects effects = new RecordingEffects();
+        RadioPlaybackManager manager = new RadioPlaybackManager(playback, sessions, effects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.update(key, ENABLED);
+        StartedSession started = sessions.started.get(0);
+
+        assertTrue(playback.applied.isEmpty());
+        assertFalse(manager.isPlaying(key));
+        assertTrue(started.session().advance(started.attempt().generation(), RadioPlaybackState.CONNECTING));
+        assertFalse(manager.isPlaying(key));
+        assertTrue(started.session().advance(started.attempt().generation(), RadioPlaybackState.BUFFERING));
+        assertFalse(manager.isPlaying(key));
+        assertTrue(started.session().advance(started.attempt().generation(), RadioPlaybackState.PLAYING));
+        assertTrue(manager.isPlaying(key));
+
+        manager.tick(key, ENABLED);
+        assertEquals(RadioPlaybackState.PLAYING, effects.updated.get(effects.updated.size() - 1).snapshot().state());
+        manager.remove(key);
+
+        assertTrue(playback.stopped.isEmpty());
+        assertEquals(List.of(key), effects.stopped);
+        assertFalse(manager.isPlaying(key));
+    }
+
+    @Test
+    void drainsMetadataToEffectsAndRejectsDetachedSessionUpdates() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RecordingEffects effects = new RecordingEffects();
+        RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions, effects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        manager.update(key, ENABLED);
+        StartedSession first = sessions.started.get(0);
+        assertTrue(first.session().advance(first.attempt().generation(), RadioPlaybackState.CONNECTING));
+        assertTrue(first.session().advance(first.attempt().generation(), RadioPlaybackState.BUFFERING));
+        assertTrue(first.session().offerStreamTitle(first.attempt(), "Current title"));
+
+        manager.tick(key, ENABLED);
+        EffectUpdate buffered = effects.updated.get(effects.updated.size() - 1);
+        assertEquals(RadioPlaybackState.BUFFERING, buffered.snapshot().state());
+        assertEquals("Current title", buffered.snapshot().streamTitle());
+
+        assertTrue(first.session().advance(first.attempt().generation(), RadioPlaybackState.PLAYING));
+        manager.tick(key, ENABLED);
+        EffectUpdate playing = effects.updated.get(effects.updated.size() - 1);
+        assertEquals(RadioPlaybackState.PLAYING, playing.snapshot().state());
+        assertEquals("Current title", playing.snapshot().streamTitle());
+
+        manager.update(key, new RadioConfiguration("https://radio.example/replacement", false));
+        StartedSession second = sessions.started.get(1);
+        assertEquals(first.attempt().generation(), second.attempt().generation());
+        assertFalse(first.session().offerStreamTitle(first.attempt(), "Stale title"));
+        assertFalse(second.session().offerStreamTitle(first.attempt(), "Stale title"));
+        manager.tick(key, second.configuration());
+        assertNull(manager.getSessionSnapshot(key).orElseThrow().streamTitle());
+    }
+
+    @Test
+    void startFailureLeavesTheRadioRetryableAndClearsEffects() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        sessions.throwOnStart = true;
+        RecordingEffects effects = new RecordingEffects();
+        RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions, effects);
+        RadioKey key = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+
+        assertThrows(IllegalStateException.class, () -> manager.update(key, ENABLED));
+
+        assertTrue(manager.getConfiguration(key).isEmpty());
+        assertEquals(List.of(key), effects.stopped);
+        sessions.throwOnStart = false;
+        assertTrue(manager.update(key, ENABLED));
+        assertEquals(1, sessions.started.size());
+    }
+
+    @Test
+    void stopFailureCannotOrphanEffectsOrOtherRadiosDuringClear() {
+        RecordingSessionDriver sessions = new RecordingSessionDriver();
+        RecordingEffects effects = new RecordingEffects();
+        RadioPlaybackManager manager = new RadioPlaybackManager(new RecordingDriver(), sessions, effects);
+        RadioKey first = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO);
+        RadioKey second = new RadioKey(FIRST_DIMENSION, BlockPos.ZERO.above());
+        manager.update(first, ENABLED);
+        manager.update(second, ENABLED);
+        sessions.throwOnStop = true;
+
+        assertThrows(IllegalStateException.class, manager::clearAll);
+
+        assertEquals(Set.of(first, second), new HashSet<>(effects.stopped));
+        assertTrue(manager.getConfiguration(first).isEmpty());
+        assertTrue(manager.getConfiguration(second).isEmpty());
+    }
+
     private static ResourceKey<Level> dimension(String path) {
         return ResourceKey.create(Registries.DIMENSION, new ResourceLocation("etched_test", path));
     }
@@ -230,10 +329,15 @@ class RadioPlaybackManagerTest {
 
         private final List<StartedSession> started = new ArrayList<>();
         private final List<RadioKey> stopped = new ArrayList<>();
+        private boolean throwOnStart;
+        private boolean throwOnStop;
 
         @Override
         public void start(RadioKey key, RadioConfiguration configuration, RadioSession session,
                           RadioSession.Attempt attempt) {
+            if (this.throwOnStart) {
+                throw new IllegalStateException("start failed");
+            }
             this.started.add(new StartedSession(key, configuration, session, attempt));
         }
 
@@ -247,6 +351,25 @@ class RadioPlaybackManagerTest {
                 assertTrue(startedSession.attempt().cancellation().isCancelled());
             }
             this.stopped.add(key);
+            if (this.throwOnStop) {
+                throw new IllegalStateException("stop failed");
+            }
+        }
+    }
+
+    private static final class RecordingEffects implements RadioPlaybackEffects {
+
+        private final List<EffectUpdate> updated = new ArrayList<>();
+        private final List<RadioKey> stopped = new ArrayList<>();
+
+        @Override
+        public void update(RadioKey key, RadioSession.Snapshot snapshot) {
+            this.updated.add(new EffectUpdate(key, snapshot));
+        }
+
+        @Override
+        public void stop(RadioKey key) {
+            this.stopped.add(key);
         }
     }
 
@@ -255,5 +378,8 @@ class RadioPlaybackManagerTest {
 
     private record StartedSession(RadioKey key, RadioConfiguration configuration, RadioSession session,
                                   RadioSession.Attempt attempt) {
+    }
+
+    private record EffectUpdate(RadioKey key, RadioSession.Snapshot snapshot) {
     }
 }

@@ -10,6 +10,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Consumer;
 
 /** Builds one decoder from one independently owned resolved radio response. */
 public final class RadioStreamPipeline {
@@ -18,19 +19,28 @@ public final class RadioStreamPipeline {
     }
 
     public static Preparation prepare(RadioResolvedSource source, RadioCancellation cancellation,
+                                       ExecutorService producerExecutor,
+                                       ExecutorService decoderExecutor, boolean forceStereo) {
+        return prepare(source, cancellation, producerExecutor, decoderExecutor, forceStereo, ignored -> {
+        });
+    }
+
+    public static Preparation prepare(RadioResolvedSource source, RadioCancellation cancellation,
                                       ExecutorService producerExecutor,
-                                      ExecutorService decoderExecutor, boolean forceStereo) {
+                                      ExecutorService decoderExecutor, boolean forceStereo,
+                                      Consumer<String> streamTitleListener) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(cancellation, "cancellation");
         Objects.requireNonNull(producerExecutor, "producerExecutor");
         Objects.requireNonNull(decoderExecutor, "decoderExecutor");
+        Objects.requireNonNull(streamTitleListener, "streamTitleListener");
         if (producerExecutor == decoderExecutor) {
             throw new IllegalArgumentException("Producer and decoder executors must be distinct");
         }
 
         RadioBufferedInputStream buffer;
         try {
-            buffer = new RadioBufferedInputStream(audioBody(source), cancellation, producerExecutor);
+            buffer = new RadioBufferedInputStream(source.body(), cancellation, producerExecutor);
         } catch (RuntimeException exception) {
             source.close();
             throw exception;
@@ -44,9 +54,10 @@ public final class RadioStreamPipeline {
                     }
                     RadioAudioStream decoded = null;
                     try {
+                        InputStream audioBody = audioBody(source, buffer, streamTitleListener);
                         decoded = switch (source.format()) {
-                            case MP3 -> new RadioMp3AudioStream(buffer);
-                            case OGG -> new RadioOggAudioStream(buffer);
+                            case MP3 -> new RadioMp3AudioStream(audioBody);
+                            case OGG -> new RadioOggAudioStream(audioBody);
                         };
                         cancellation.throwIfCancelled();
                         return forceStereo ? decoded : new RadioMonoAudioStream(decoded);
@@ -66,20 +77,23 @@ public final class RadioStreamPipeline {
         return new Preparation(buffer, stream);
     }
 
-    private static InputStream audioBody(RadioResolvedSource source) {
+    private static InputStream audioBody(RadioResolvedSource source, InputStream body,
+                                         Consumer<String> streamTitleListener) {
         String value = source.headers().entrySet().stream()
                 .filter(entry -> entry.getKey() != null && entry.getKey().equalsIgnoreCase("icy-metaint"))
                 .flatMap(entry -> entry.getValue().stream())
                 .findFirst()
                 .orElse(null);
         if (value == null) {
-            return source.body();
+            return body;
         }
         try {
             int interval = Integer.parseInt(value.trim());
-            return interval > 0 ? new IcyInputStream(source.body(), interval) : source.body();
+            return interval > 0
+                    ? new IcyInputStream(body, interval, streamTitleListener)
+                    : body;
         } catch (NumberFormatException ignored) {
-            return source.body();
+            return body;
         }
     }
 
