@@ -4,6 +4,7 @@ import gg.moonflower.etched.core.Etched;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.event.level.LevelEvent;
+import net.minecraftforge.event.GameShuttingDownEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -23,5 +24,10 @@ public final class RadioClientEvents {
         if (event.getLevel().isClientSide()) {
             RadioPlaybackManager.getInstance().clearAll();
         }
+    }
+
+    @SubscribeEvent
+    public static void onGameShuttingDown(GameShuttingDownEvent event) {
+        RadioPlaybackManager.getInstance().shutdown();
     }
 }

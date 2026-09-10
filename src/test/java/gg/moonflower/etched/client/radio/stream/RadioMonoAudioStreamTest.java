@@ -49,6 +49,18 @@ class RadioMonoAudioStreamTest {
                 () -> new RadioMonoAudioStream(new FakeStream(padded, shorts(1, 2))));
     }
 
+    @Test
+    void reportsDownmixFailuresThroughItsTerminalSignal() {
+        RadioMonoAudioStream stream = new RadioMonoAudioStream(
+                new FakeStream(stereoFormat(), shorts(1, 2, 3)));
+
+        IOException failure = assertThrows(IOException.class, () -> stream.read(4));
+        RadioAudioStream.Termination termination = stream.termination().toCompletableFuture().join();
+
+        assertEquals(RadioAudioStream.TerminalState.FAILED, termination.state());
+        assertSame(failure, termination.failure());
+    }
+
     private static AudioFormat stereoFormat() {
         return new AudioFormat(44_100, 16, 2, true, false);
     }

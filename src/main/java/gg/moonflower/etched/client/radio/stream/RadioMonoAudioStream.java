@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
 /** Downmixes stereo 16-bit radio PCM for positional playback. */
@@ -13,6 +14,7 @@ public final class RadioMonoAudioStream implements RadioAudioStream {
     private final RadioAudioStream source;
     private final AudioFormat sourceFormat;
     private final AudioFormat format;
+    private final CompletableFuture<Termination> stereoTermination;
 
     public RadioMonoAudioStream(RadioAudioStream source) {
         this.source = Objects.requireNonNull(source, "source");
@@ -31,6 +33,16 @@ public final class RadioMonoAudioStream implements RadioAudioStream {
         this.format = channels == 1 ? this.sourceFormat : new AudioFormat(
                 this.sourceFormat.getEncoding(), this.sourceFormat.getSampleRate(), Short.SIZE,
                 1, Short.BYTES, this.sourceFormat.getFrameRate(), this.sourceFormat.isBigEndian());
+        this.stereoTermination = channels == 1 ? null : new CompletableFuture<>();
+        if (this.stereoTermination != null) {
+            this.source.termination().whenComplete((termination, failure) -> {
+                if (failure != null) {
+                    this.stereoTermination.completeExceptionally(failure);
+                } else {
+                    this.stereoTermination.complete(termination);
+                }
+            });
+        }
     }
 
     @Override
@@ -49,7 +61,9 @@ public final class RadioMonoAudioStream implements RadioAudioStream {
         sourceBytes -= sourceBytes % this.sourceFormat.getFrameSize();
         ByteBuffer stereo = this.source.read(sourceBytes);
         if (stereo.remaining() % this.sourceFormat.getFrameSize() != 0) {
-            throw new IOException("Stereo radio decoder returned a partial PCM frame");
+            IOException failure = new IOException("Stereo radio decoder returned a partial PCM frame");
+            this.stereoTermination.complete(new Termination(TerminalState.FAILED, failure));
+            throw failure;
         }
 
         ByteOrder order = this.sourceFormat.isBigEndian() ? ByteOrder.BIG_ENDIAN : ByteOrder.LITTLE_ENDIAN;
@@ -66,11 +80,17 @@ public final class RadioMonoAudioStream implements RadioAudioStream {
 
     @Override
     public CompletionStage<Termination> termination() {
-        return this.source.termination();
+        return this.stereoTermination == null ? this.source.termination() : this.stereoTermination;
     }
 
     @Override
     public void close() throws IOException {
-        this.source.close();
+        try {
+            this.source.close();
+        } finally {
+            if (this.stereoTermination != null) {
+                this.stereoTermination.complete(new Termination(TerminalState.CLOSED, null));
+            }
+        }
     }
 }

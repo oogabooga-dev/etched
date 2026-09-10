@@ -20,6 +20,9 @@ public final class RadioSession {
     private RadioCancellation cancellation;
     private String streamTitle;
     private PendingStreamTitle pendingStreamTitle;
+    private int attemptNumber;
+    private long playingSinceMillis = -1L;
+    private long nextRetryAtMillis = -1L;
 
     public Attempt start(String source) {
         Objects.requireNonNull(source, "source");
@@ -31,20 +34,32 @@ public final class RadioSession {
         Attempt attempt;
         synchronized (this) {
             previous = this.cancellation;
-            attempt = this.beginAttempt(source);
+            attempt = this.beginAttempt(source, 1);
         }
         cancel(previous);
         return attempt;
     }
 
     public synchronized boolean advance(long generation, RadioPlaybackState nextState) {
+        return this.advance(generation, null, nextState, System.currentTimeMillis());
+    }
+
+    public synchronized boolean advance(Attempt attempt, RadioPlaybackState nextState, long nowMillis) {
+        Objects.requireNonNull(attempt, "attempt");
+        return this.advance(attempt.generation(), attempt.cancellation(), nextState, nowMillis);
+    }
+
+    private boolean advance(long generation, @Nullable RadioCancellation expectedCancellation,
+                            RadioPlaybackState nextState, long nowMillis) {
         Objects.requireNonNull(nextState, "nextState");
         if (nextState != RadioPlaybackState.CONNECTING
                 && nextState != RadioPlaybackState.BUFFERING
                 && nextState != RadioPlaybackState.PLAYING) {
             throw new IllegalArgumentException("Not a progress state: " + nextState);
         }
-        if (!this.isCurrentAttempt(generation)) {
+        if (expectedCancellation == null
+                ? !this.isCurrentAttempt(generation)
+                : !this.isCurrentAttempt(generation, expectedCancellation)) {
             return false;
         }
         if (!isAllowedProgression(this.state, nextState)) {
@@ -52,11 +67,28 @@ public final class RadioSession {
         }
 
         this.state = nextState;
+        if (nextState == RadioPlaybackState.PLAYING) {
+            this.playingSinceMillis = nowMillis;
+        }
         return true;
     }
 
     public Optional<ReconnectWait> scheduleReconnect(long generation, RadioFailure failure) {
+        Attempt attempt;
+        synchronized (this) {
+            if (!this.isCurrentAttempt(generation)) {
+                return Optional.empty();
+            }
+            attempt = new Attempt(this.generation, this.source, this.cancellation);
+        }
+        return this.scheduleReconnect(attempt, failure, System.currentTimeMillis(), new RadioReconnectPolicy());
+    }
+
+    public Optional<ReconnectWait> scheduleReconnect(Attempt attempt, RadioFailure failure,
+                                                     long nowMillis, RadioReconnectPolicy policy) {
+        Objects.requireNonNull(attempt, "attempt");
         Objects.requireNonNull(failure, "failure");
+        Objects.requireNonNull(policy, "policy");
         if (!failure.recoverable()) {
             throw new IllegalArgumentException("Reconnect requires a recoverable failure");
         }
@@ -64,29 +96,47 @@ public final class RadioSession {
         RadioCancellation previous;
         ReconnectWait wait;
         synchronized (this) {
-            if (!this.isCurrentAttempt(generation)) {
+            if (!this.isCurrentAttempt(attempt)) {
                 return Optional.empty();
             }
 
+            if (this.state == RadioPlaybackState.PLAYING
+                    && policy.isSustainedPlayback(Math.max(0L, nowMillis - this.playingSinceMillis))) {
+                this.attemptNumber = 1;
+            }
+            long delayMillis = policy.retryDelayMillis(this.attemptNumber, failure);
             this.state = RadioPlaybackState.RECONNECT_WAIT;
             this.failure = failure;
             this.pendingStreamTitle = null;
+            this.playingSinceMillis = -1L;
+            this.nextRetryAtMillis = saturatedAdd(nowMillis, delayMillis);
             previous = this.cancellation;
             this.cancellation = new RadioCancellation();
-            wait = new ReconnectWait(this.generation, this.cancellation);
+            wait = new ReconnectWait(this.generation, this.cancellation,
+                    this.attemptNumber, this.nextRetryAtMillis);
         }
         cancel(previous);
         return Optional.of(wait);
     }
 
     public boolean fail(long generation, RadioFailure failure) {
+        return this.fail(generation, null, failure);
+    }
+
+    public boolean fail(Attempt attempt, RadioFailure failure) {
+        Objects.requireNonNull(attempt, "attempt");
+        return this.fail(attempt.generation(), attempt.cancellation(), failure);
+    }
+
+    private boolean fail(long generation, @Nullable RadioCancellation expectedCancellation, RadioFailure failure) {
         Objects.requireNonNull(failure, "failure");
         if (failure.recoverable()) {
             throw new IllegalArgumentException("Failed state requires a fatal failure");
         }
-        return this.finishAttempt(generation, RadioPlaybackState.FAILED, failure);
+        return this.finishAttempt(generation, expectedCancellation, RadioPlaybackState.FAILED, failure);
     }
 
+    /** Starts an explicit retry and resets automatic backoff. */
     public Optional<Attempt> retry(long expectedGeneration) {
         RadioCancellation previous;
         Attempt attempt;
@@ -96,10 +146,49 @@ public final class RadioSession {
                 return Optional.empty();
             }
             previous = this.cancellation;
-            attempt = this.beginAttempt(this.source);
+            attempt = this.beginAttempt(this.source, 1);
         }
         cancel(previous);
         return Optional.of(attempt);
+    }
+
+    /** Starts the retry owned by the exact reconnect wait token. */
+    public Optional<Attempt> retry(ReconnectWait wait) {
+        Objects.requireNonNull(wait, "wait");
+        RadioCancellation previous;
+        Attempt attempt;
+        synchronized (this) {
+            if (!this.isCurrentWait(wait)) {
+                return Optional.empty();
+            }
+            previous = this.cancellation;
+            int nextAttempt = wait.attemptNumber() == Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE : wait.attemptNumber() + 1;
+            attempt = this.beginAttempt(this.source, nextAttempt);
+        }
+        cancel(previous);
+        return Optional.of(attempt);
+    }
+
+    public boolean failReconnect(ReconnectWait wait, RadioFailure failure) {
+        Objects.requireNonNull(wait, "wait");
+        Objects.requireNonNull(failure, "failure");
+        if (failure.recoverable()) {
+            throw new IllegalArgumentException("Failed state requires a fatal failure");
+        }
+        RadioCancellation previous;
+        synchronized (this) {
+            if (!this.isCurrentWait(wait)) {
+                return false;
+            }
+            this.state = RadioPlaybackState.FAILED;
+            this.failure = failure;
+            this.nextRetryAtMillis = -1L;
+            previous = this.cancellation;
+            this.cancellation = null;
+        }
+        cancel(previous);
+        return true;
     }
 
     public boolean stop() {
@@ -114,6 +203,9 @@ public final class RadioSession {
             this.failure = null;
             this.streamTitle = null;
             this.pendingStreamTitle = null;
+            this.attemptNumber = 0;
+            this.playingSinceMillis = -1L;
+            this.nextRetryAtMillis = -1L;
             previous = this.cancellation;
             this.cancellation = null;
         }
@@ -122,7 +214,8 @@ public final class RadioSession {
     }
 
     public synchronized Snapshot snapshot() {
-        return new Snapshot(this.generation, this.source, this.state, this.failure, this.streamTitle);
+        return new Snapshot(this.generation, this.source, this.state, this.failure, this.streamTitle,
+                this.attemptNumber, this.nextRetryAtMillis);
     }
 
     /** Coalesces metadata produced by the exact currently active stream attempt. */
@@ -152,16 +245,21 @@ public final class RadioSession {
         return true;
     }
 
-    private boolean finishAttempt(long generation, RadioPlaybackState nextState, RadioFailure failure) {
+    private boolean finishAttempt(long generation, @Nullable RadioCancellation expectedCancellation,
+                                  RadioPlaybackState nextState, RadioFailure failure) {
         RadioCancellation previous;
         synchronized (this) {
-            if (!this.isCurrentAttempt(generation)) {
+            if (expectedCancellation == null
+                    ? !this.isCurrentAttempt(generation)
+                    : !this.isCurrentAttempt(generation, expectedCancellation)) {
                 return false;
             }
 
             this.state = nextState;
             this.failure = failure;
             this.pendingStreamTitle = null;
+            this.playingSinceMillis = -1L;
+            this.nextRetryAtMillis = -1L;
             previous = this.cancellation;
             this.cancellation = null;
         }
@@ -196,15 +294,32 @@ public final class RadioSession {
         };
     }
 
-    private Attempt beginAttempt(String source) {
+    private Attempt beginAttempt(String source, int attemptNumber) {
         this.generation++;
         this.source = source;
         this.state = RadioPlaybackState.RESOLVING;
         this.failure = null;
         this.streamTitle = null;
         this.pendingStreamTitle = null;
+        this.attemptNumber = attemptNumber;
+        this.playingSinceMillis = -1L;
+        this.nextRetryAtMillis = -1L;
         this.cancellation = new RadioCancellation();
         return new Attempt(this.generation, this.source, this.cancellation);
+    }
+
+    private boolean isCurrentWait(ReconnectWait wait) {
+        return this.generation == wait.generation()
+                && this.cancellation == wait.cancellation()
+                && !wait.cancellation().isCancelled()
+                && this.state == RadioPlaybackState.RECONNECT_WAIT;
+    }
+
+    private static long saturatedAdd(long value, long increment) {
+        if (increment > 0L && value > Long.MAX_VALUE - increment) {
+            return Long.MAX_VALUE;
+        }
+        return value + increment;
     }
 
     private static boolean isAllowedProgression(RadioPlaybackState current, RadioPlaybackState next) {
@@ -230,19 +345,37 @@ public final class RadioSession {
         }
     }
 
-    public record ReconnectWait(long generation, RadioCancellation cancellation) {
+    public record ReconnectWait(long generation, RadioCancellation cancellation,
+                                int attemptNumber, long retryAtMillis) {
+
+        public ReconnectWait(long generation, RadioCancellation cancellation) {
+            this(generation, cancellation, 1, -1L);
+        }
 
         public ReconnectWait {
             Objects.requireNonNull(cancellation, "cancellation");
+            if (attemptNumber < 1) {
+                throw new IllegalArgumentException("Attempt number must be positive");
+            }
         }
     }
 
     public record Snapshot(long generation, String source, RadioPlaybackState state,
-                           @Nullable RadioFailure failure, @Nullable String streamTitle) {
+                           @Nullable RadioFailure failure, @Nullable String streamTitle,
+                           int attemptNumber, long nextRetryAtMillis) {
+
+        public Snapshot(long generation, String source, RadioPlaybackState state,
+                        @Nullable RadioFailure failure, @Nullable String streamTitle) {
+            this(generation, source, state, failure, streamTitle,
+                    state == RadioPlaybackState.STOPPED ? 0 : 1, -1L);
+        }
 
         public Snapshot {
             Objects.requireNonNull(source, "source");
             Objects.requireNonNull(state, "state");
+            if (attemptNumber < 0) {
+                throw new IllegalArgumentException("Attempt number must not be negative");
+            }
         }
     }
 

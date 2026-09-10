@@ -1,6 +1,7 @@
 package gg.moonflower.etched.client.radio.stream;
 
 import gg.moonflower.etched.client.radio.RadioCancellation;
+import gg.moonflower.etched.client.radio.RadioFailure;
 import gg.moonflower.etched.client.radio.source.RadioResolvedSource;
 
 import java.io.IOException;
@@ -50,7 +51,9 @@ public final class RadioStreamPipeline {
                 .thenApplyAsync(startup -> {
                     cancellation.throwIfCancelled();
                     if (startup == RadioBufferedInputStream.Startup.EMPTY_EOF) {
-                        throw new CompletionException(new IOException("Radio stream ended before audio data arrived"));
+                        throw new CompletionException(new RadioStreamException(
+                                RadioFailure.Code.UNEXPECTED_EOF, true,
+                                "Radio stream ended before audio data arrived", null));
                     }
                     RadioAudioStream decoded = null;
                     try {
