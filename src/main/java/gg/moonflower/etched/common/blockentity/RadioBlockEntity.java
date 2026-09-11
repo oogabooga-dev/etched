@@ -6,7 +6,6 @@ import gg.moonflower.etched.common.radio.RadioConfiguration;
 import gg.moonflower.etched.core.registry.EtchedBlocks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.world.Clearable;
 import net.minecraft.world.level.Level;
@@ -14,14 +13,12 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Objects;
-
 /**
  * @author Ocelot
  */
 public class RadioBlockEntity extends BlockEntity implements Clearable {
 
-    private String url;
+    private final RadioControlState controlState = new RadioControlState();
 
     public RadioBlockEntity(BlockPos pos, BlockState state) {
         super(EtchedBlocks.RADIO_BE.get(), pos, state);
@@ -34,15 +31,13 @@ public class RadioBlockEntity extends BlockEntity implements Clearable {
     @Override
     public void load(CompoundTag nbt) {
         super.load(nbt);
-        this.url = nbt.contains("Url", Tag.TAG_STRING) ? nbt.getString("Url") : null;
+        this.controlState.load(nbt);
         this.publishUpdate();
     }
 
     @Override
     public void saveAdditional(CompoundTag nbt) {
-        if (this.url != null) {
-            nbt.putString("Url", this.url);
-        }
+        this.controlState.save(nbt);
     }
 
     @Override
@@ -58,22 +53,18 @@ public class RadioBlockEntity extends BlockEntity implements Clearable {
 
     @Override
     public void clearContent() {
-        this.url = null;
-        this.publishUpdate();
+        if (this.controlState.clear()) {
+            this.stateChanged();
+        }
     }
 
     public String getUrl() {
-        return this.url;
+        return this.controlState.storedUrl();
     }
 
     public void setUrl(String url) {
-        if (!Objects.equals(this.url, url)) {
-            this.url = url;
-            this.setChanged();
-            if (this.level != null) {
-                this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
-            }
-            this.publishUpdate();
+        if (this.controlState.apply(url)) {
+            this.stateChanged();
         }
     }
 
@@ -110,7 +101,15 @@ public class RadioBlockEntity extends BlockEntity implements Clearable {
 
     private RadioConfiguration getConfiguration(BlockState state) {
         boolean powered = state.hasProperty(RadioBlock.POWERED) && state.getValue(RadioBlock.POWERED);
-        return new RadioConfiguration(this.url, powered);
+        return new RadioConfiguration(this.controlState.activeUrl(), powered);
+    }
+
+    private void stateChanged() {
+        this.setChanged();
+        if (this.level != null) {
+            this.level.sendBlockUpdated(this.worldPosition, this.getBlockState(), this.getBlockState(), 3);
+        }
+        this.publishUpdate();
     }
 
     private void publishUpdate() {

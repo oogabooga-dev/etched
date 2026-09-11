@@ -9,7 +9,6 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
@@ -22,11 +21,17 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     private static final ResourceLocation TEXTURE = new ResourceLocation(Etched.MOD_ID, "textures/gui/radio.png");
     private static final Component LOADING_URL = Component.translatable("screen." + Etched.MOD_ID + ".radio.loading_url");
     private static final Component INVALID_URL = Component.translatable("screen." + Etched.MOD_ID + ".radio.error.invalid_url");
+    private static final Component PLAY = Component.translatable("screen." + Etched.MOD_ID + ".radio.play");
+    private static final Component STOP = Component.translatable("screen." + Etched.MOD_ID + ".radio.stop");
+    private static final Component CLOSE = Component.translatable("screen." + Etched.MOD_ID + ".radio.close");
     private static final int BACKGROUND_HEIGHT = 39;
+    private static final int BUTTON_WIDTH = 56;
+    private static final int BUTTON_GAP = 4;
 
     private final RadioEditState editState = new RadioEditState();
     private EditBox url;
-    private Button doneButton;
+    private Button playButton;
+    private Button stopButton;
 
     public RadioScreen(RadioMenu menu, Inventory inventory, Component component) {
         super(menu, inventory, component);
@@ -48,19 +53,25 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
         this.url.setValue(this.editState.value());
         this.url.setResponder(value -> {
             this.editState.update(value);
-            this.updateDoneButton();
+            this.updateActionButtons();
         });
         this.addRenderableWidget(this.url);
-        this.doneButton = this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, button ->
-                        this.editState.submit().ifPresent(value -> {
-                            this.updateDoneButton();
-                            this.url.setEditable(false);
-                            EtchedMessages.PLAY.sendToServer(new ServerboundSetUrlPacket(value));
-                            this.onClose();
-                        }))
-                .bounds(this.leftPos, this.topPos + this.imageHeight + 5, this.imageWidth, 20)
+        int buttonY = this.topPos + this.imageHeight + 5;
+        this.playButton = this.addRenderableWidget(Button.builder(PLAY, button ->
+                        this.editState.play().ifPresent(this::sendUrl))
+                .bounds(this.leftPos, buttonY, BUTTON_WIDTH, 20)
                 .build());
-        this.updateDoneButton();
+        this.stopButton = this.addRenderableWidget(Button.builder(STOP, button -> {
+                    if (this.editState.stop()) {
+                        this.sendUrl("");
+                    }
+                })
+                .bounds(this.leftPos + BUTTON_WIDTH + BUTTON_GAP, buttonY, BUTTON_WIDTH, 20)
+                .build());
+        this.addRenderableWidget(Button.builder(CLOSE, button -> this.onClose())
+                .bounds(this.leftPos + (BUTTON_WIDTH + BUTTON_GAP) * 2, buttonY, BUTTON_WIDTH, 20)
+                .build());
+        this.updateActionButtons();
     }
 
     @Override
@@ -104,12 +115,20 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
         this.url.setValue(this.editState.value());
         this.setFocused(this.url);
         this.url.setFocused(true);
-        this.updateDoneButton();
+        this.updateActionButtons();
     }
 
-    private void updateDoneButton() {
-        if (this.doneButton != null) {
-            this.doneButton.active = this.editState.canSubmit();
+    private void sendUrl(String value) {
+        EtchedMessages.PLAY.sendToServer(new ServerboundSetUrlPacket(value));
+        this.updateActionButtons();
+    }
+
+    private void updateActionButtons() {
+        if (this.playButton != null) {
+            this.playButton.active = this.editState.canPlay();
+        }
+        if (this.stopButton != null) {
+            this.stopButton.active = this.editState.canStop();
         }
     }
 }
