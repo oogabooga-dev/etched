@@ -1,7 +1,7 @@
 modLoader = "javafml"
-loaderVersion = "[${forge_loader_version},)"
-issueTrackerURL = "https://github.com/MoonflowerTeam/${archives_base_name}/issues"
-license = "GPLv3"
+loaderVersion = "[${forge_loader_version},48)"
+issueTrackerURL = "https://github.com/oogabooga-dev/re-etched/issues"
+license = "GPL-3.0-only for project code; bundled third-party and inherited resource terms, see META-INF/LICENSE_RE-ETCHED and META-INF/THIRD_PARTY_NOTICES.md"
 
 [[mods]]
 modId = "${mod_id}"
@@ -9,9 +9,9 @@ version = "${mod_version}"
 displayName = "${mod_name}"
 description = "${mod_description}"
 logoFile = "${mod_id}.logo.png"
-authors = "Moonflower"
+authors = "Moonflower Studio (original); oogabooga-dev (Re-Etched fork)"
 credits = "Ocelot, Jackson, Farcr (Art), AstraZoey (Sound Design)"
-displayURL = "https://www.moonflower.gg"
+displayURL = "https://github.com/oogabooga-dev/re-etched"
 
 [modproperties.${ mod_id }]
 catalogueImageIcon = "${mod_id}.icon.png"
@@ -19,13 +19,13 @@ catalogueImageIcon = "${mod_id}.icon.png"
 [[dependencies.${ mod_id }]]
 modId = "forge"
 mandatory = true
-versionRange = "[${forge_loader_version},)"
+versionRange = "[${forge_loader_version},48)"
 ordering = "AFTER"
 side = "BOTH"
 
 [[dependencies.${ mod_id }]]
 modId = "minecraft"
 mandatory = true
-versionRange = "[${minecraft_version},)"
+versionRange = "[${minecraft_version},1.20.2)"
 ordering = "AFTER"
 side = "BOTH"

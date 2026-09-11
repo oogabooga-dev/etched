@@ -1,5 +1,5 @@
 plugins {
-    id "dev.architectury.loom" version "1.5-SNAPSHOT"
+    id "dev.architectury.loom" version "1.5.391"
     id "com.github.johnrengelman.shadow" version "8.1.1"
     id "maven-publish"
 }
@@ -19,6 +19,64 @@ java {
 
 tasks.withType(JavaCompile).configureEach {
     options.release = 17
+}
+
+def normalizeMixinRefmap = tasks.register("normalizeMixinRefmap") {
+    dependsOn compileJava
+
+    doLast {
+        def refmap = layout.buildDirectory.file("classes/java/main/${project.archives_base_name}-refmap.json").get().asFile
+        if (!refmap.isFile()) {
+            throw new GradleException("Missing generated mixin refmap: ${refmap}")
+        }
+
+        def sortJson
+        sortJson = { value ->
+            if (value instanceof Map) {
+                def sorted = new TreeMap<String, Object>()
+                value.each { key, child -> sorted.put(key.toString(), sortJson(child)) }
+                return sorted
+            }
+            if (value instanceof List) {
+                return value.collect { child -> sortJson(child) }
+            }
+            return value
+        }
+
+        def parsed = new groovy.json.JsonSlurper().parse(refmap)
+        def normalized = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(sortJson(parsed)))
+        refmap.setText(normalized + "\n", "UTF-8")
+    }
+}
+
+def verifyJlayerBinary = tasks.register("verifyJlayerBinary") {
+    inputs.files(configurations.shadowCommon)
+
+    doLast {
+        def files = configurations.shadowCommon.files
+        if (files.size() != 1) {
+            throw new GradleException("Expected one JLayer binary, found ${files.size()}")
+        }
+
+        def actual = java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(files.first().bytes))
+        def expected = "850508c837454a1b06017c32a36876fae516de1e89a829f725fee1e6dcc52000"
+        if (actual != expected) {
+            throw new GradleException("JLayer 1.0.1 SHA-256 mismatch: ${actual}")
+        }
+    }
+}
+
+tasks.withType(Jar).configureEach {
+    dependsOn normalizeMixinRefmap
+
+    from(rootProject.file("LICENSE")) {
+        into "META-INF"
+        rename { "LICENSE_RE-ETCHED" }
+    }
+    from(rootProject.file("THIRD_PARTY_NOTICES.md")) {
+        into "META-INF"
+    }
 }
 
 loom {
@@ -84,6 +142,7 @@ processResources {
 }
 
 shadowJar {
+    dependsOn verifyJlayerBinary
     configurations = [project.configurations.shadowCommon]
     relocate "javazoom", "gg.moonflower.etched.javazoom"
     archiveClassifier = "dev-shadow"
