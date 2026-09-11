@@ -21,6 +21,16 @@ tasks.withType(JavaCompile).configureEach {
     options.release = 17
 }
 
+tasks.withType(Jar).configureEach {
+    from(rootProject.file("LICENSE")) {
+        into "META-INF"
+        rename { "LICENSE_RE-ETCHED" }
+    }
+    from(rootProject.file("THIRD_PARTY_NOTICES.md")) {
+        into "META-INF"
+    }
+}
+
 loom {
     accessWidenerPath = file("src/main/resources/${project.mod_id}.accesswidener")
 

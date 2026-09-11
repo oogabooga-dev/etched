@@ -18,6 +18,8 @@ class EtchedCompatibilityTest {
         assertTrue(displayTest.remoteVersionTest().test("3.0.4", false));
         assertTrue(displayTest.remoteVersionTest().test("4.0.0", true));
         assertTrue(displayTest.remoteVersionTest().test("4.0.0", false));
+        assertTrue(displayTest.remoteVersionTest().test("4.0.0-beta.1", true));
+        assertTrue(displayTest.remoteVersionTest().test("4.0.0-beta.1", false));
     }
 
     @Test

@@ -1,2 +1,0 @@
-public net.minecraft.world.entity.vehicle.AbstractMinecart getDropItem()Lnet/minecraft/world/item/Item; # getDropItem
-public net.minecraft.data.worldgen.ProcessorLists EMPTY # EMPTY

@@ -1,3 +1,22 @@
+/*
+ * Copyright (c) 1999, 2013, Oracle and/or its affiliates. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+ *
+ * This code is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 only, as
+ * published by the Free Software Foundation. Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * in the LICENSE file accompanying this code.
+ *
+ * This code is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+ * version 2 for more details.
+ *
+ * Modified for Etched beginning on 2021-06-10. Changes include package,
+ * class, API, constant, parsing, and compatibility adaptations. Subsequent
+ * compatibility changes were made through 2024-01-24.
+ */
 package gg.moonflower.etched.api.util;
 
 import javax.sound.sampled.AudioFileFormat;

@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  JLAYER_SOURCES_URL: https://repo.maven.apache.org/maven2/javazoom/jlayer/1.0.1/jlayer-1.0.1-sources.jar
+  JLAYER_SOURCES_SHA256: ecde410fc8940ab5d8d5a1d5c585870a3a194f4001701e66a27b8dd8cb7b75ce
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Verify release tag
+        shell: bash
+        run: |
+          version=""
+          while IFS='=' read -r key value; do
+            if [[ "$key" == "mod_version" ]]; then
+              version="$value"
+              break
+            fi
+          done < gradle.properties
+
+          if [[ -z "$version" || "$GITHUB_REF_NAME" != "v$version" ]]; then
+            printf 'Tag %s does not match mod_version %s\n' "$GITHUB_REF_NAME" "$version" >&2
+            exit 1
+          fi
+
+      - name: Clean, test, and build
+        run: ./gradlew clean test build --no-daemon
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          shopt -s nullglob
+          jars=(build/libs/re-etched-*.jar)
+          production=()
+
+          for jar in "${jars[@]}"; do
+            case "$jar" in
+              *-dev.jar|*-dev-shadow.jar) ;;
+              *) production+=("$jar") ;;
+            esac
+          done
+
+          if (( ${#production[@]} != 1 )); then
+            printf 'Expected exactly one production JAR, found %d\n' "${#production[@]}" >&2
+            printf '%s\n' "${production[@]}" >&2
+            exit 1
+          fi
+
+          mkdir release
+          jar_name="${production[0]##*/}"
+          cp "${production[0]}" "release/$jar_name"
+          jar_sha256="$(sha256sum "release/$jar_name")"
+          printf '%s  %s\n' "${jar_sha256%% *}" "$jar_name" > "release/$jar_name.sha256"
+
+          sources_name="jlayer-1.0.1-sources.jar"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "release/$sources_name" "$JLAYER_SOURCES_URL"
+          printf '%s  %s\n' "$JLAYER_SOURCES_SHA256" "release/$sources_name" | sha256sum --check --strict -
+
+          printf 'version=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          if [[ "${{ steps.assets.outputs.version }}" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag \
+            --title "Re-Etched ${{ steps.assets.outputs.version }} for Forge 1.20.1" \
+            --generate-notes \
+            "${prerelease[@]}"
