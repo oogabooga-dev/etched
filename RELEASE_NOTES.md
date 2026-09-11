@@ -19,7 +19,11 @@ with or endorsed by Moonflower Studio.
 - Minecraft 1.20.1
 - Forge 47.x; Forge 47.4.10 is the tested and recommended version
 - Java 17
-- Re-Etched installed on both the client and dedicated server
+- Recommended deployment: the same Re-Etched version on the client and server
+
+Mixed Re-Etched and original Etched 3.0.4 client/server deployments are a
+compatibility target, but using the same Re-Etched version on both sides is the
+recommended beta configuration.
 
 ## Installation
 
