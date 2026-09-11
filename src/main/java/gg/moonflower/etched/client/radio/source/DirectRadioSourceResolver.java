@@ -16,7 +16,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
-public final class DirectRadioSourceResolver implements RadioSourceResolver {
+public final class DirectRadioSourceResolver implements RadioSourceProgramResolver {
 
     private static final int MINIMUM_SNIFF_BYTES = 4;
 
@@ -30,6 +30,17 @@ public final class DirectRadioSourceResolver implements RadioSourceResolver {
     }
 
     @Override
+    public RadioSourceProgram resolveProgram(URI input, RadioResolveContext context)
+            throws RadioSourceException {
+        Objects.requireNonNull(context, "context");
+        if (!this.supports(input)) {
+            throw failure(RadioFailure.Code.INVALID_URL, false,
+                    "Direct radio sources must use an absolute HTTP(S) URL", null);
+        }
+        return new RadioSourceProgram(RadioSourceProgram.Kind.STATION, input, List.of(
+                new RadioSourceProgram.Track(input, null, next -> this.resolve(input, next))));
+    }
+
     public RadioResolvedSource resolve(URI input, RadioResolveContext context) throws RadioSourceException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(context, "context");
