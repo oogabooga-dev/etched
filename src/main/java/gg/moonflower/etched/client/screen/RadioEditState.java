@@ -8,33 +8,35 @@ import java.util.Optional;
 final class RadioEditState {
 
     private boolean loaded;
-    private boolean submitted;
+    private boolean configured;
     private String value = "";
     private RadioUrlValidator.Result validation = RadioUrlValidator.validate("");
 
     boolean receiveInitialUrl(String value) {
-        if (this.loaded || this.submitted) {
+        if (this.loaded) {
             return false;
         }
         this.loaded = true;
         this.update(value);
+        this.configured = value != null && !value.isBlank();
         return true;
     }
 
     void update(String value) {
-        if (this.submitted) {
-            return;
-        }
         this.value = value == null ? "" : value;
         this.validation = RadioUrlValidator.validate(this.value);
     }
 
-    Optional<String> submit() {
-        if (!this.canSubmit()) {
+    Optional<String> play() {
+        if (!this.canPlay()) {
             return Optional.empty();
         }
-        this.submitted = true;
+        this.configured = true;
         return Optional.of(this.validation.normalized());
+    }
+
+    boolean stop() {
+        return this.canStop();
     }
 
     boolean loaded() {
@@ -45,8 +47,12 @@ final class RadioEditState {
         return this.validation.valid();
     }
 
-    boolean canSubmit() {
-        return this.loaded && !this.submitted && this.validation.valid();
+    boolean canPlay() {
+        return this.loaded && this.validation.valid() && !this.validation.normalized().isEmpty();
+    }
+
+    boolean canStop() {
+        return this.loaded && this.configured;
     }
 
     String value() {

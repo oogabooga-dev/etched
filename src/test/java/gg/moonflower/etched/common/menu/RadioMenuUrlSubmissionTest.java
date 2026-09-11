@@ -12,25 +12,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RadioMenuUrlSubmissionTest {
 
     @Test
-    void acceptsOnlyOneValidSubmission() {
+    void acceptsRepeatedValidControlCommands() {
         RadioMenu.UrlSubmission submission = new RadioMenu.UrlSubmission();
         List<String> accepted = new ArrayList<>();
 
         assertFalse(submission.submit("not a url", accepted::add));
         assertTrue(submission.submit("  https://radio.example/live?token=A%2BB  ", accepted::add));
-        assertFalse(submission.submit("https://radio.example/second", accepted::add));
+        assertTrue(submission.submit("   ", accepted::add));
+        assertTrue(submission.submit("https://radio.example/second", accepted::add));
 
-        assertEquals(List.of("https://radio.example/live?token=A%2BB"), accepted);
+        assertEquals(List.of("https://radio.example/live?token=A%2BB", "", "https://radio.example/second"), accepted);
     }
 
     @Test
-    void intentionalEmptySubmissionClearsOnlyOnce() {
+    void boundsCommandsAcceptedByOneOpenMenu() {
         RadioMenu.UrlSubmission submission = new RadioMenu.UrlSubmission();
         List<String> accepted = new ArrayList<>();
 
-        assertTrue(submission.submit("   ", accepted::add));
-        assertFalse(submission.submit("https://radio.example/live", accepted::add));
+        for (int i = 0; i < RadioMenu.UrlSubmission.MAX_COMMANDS; i++) {
+            assertTrue(submission.submit("https://radio.example/" + i, accepted::add));
+        }
+        assertFalse(submission.submit("https://radio.example/excess", accepted::add));
+        assertTrue(submission.submit("", accepted::add));
 
-        assertEquals(List.of(""), accepted);
+        assertEquals(RadioMenu.UrlSubmission.MAX_COMMANDS + 1, accepted.size());
+        assertEquals("", accepted.get(accepted.size() - 1));
     }
 }

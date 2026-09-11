@@ -52,7 +52,7 @@ public class RadioMenu extends AbstractContainerMenu {
     }
 
     /**
-     * Applies the first valid URL submitted for this menu instance.
+     * Applies a valid radio control command for this menu instance.
      *
      * @return Whether this submission was accepted
      */
@@ -62,14 +62,23 @@ public class RadioMenu extends AbstractContainerMenu {
 
     static final class UrlSubmission {
 
-        private boolean submitted;
+        static final int MAX_COMMANDS = 32;
+
+        private int commands;
 
         boolean submit(String url, Consumer<String> consumer) {
             RadioUrlValidator.Result validation = RadioUrlValidator.validate(url);
-            if (this.submitted || !validation.valid()) {
+            if (!validation.valid()) {
                 return false;
             }
-            this.submitted = true;
+            if (validation.normalized().isEmpty()) {
+                consumer.accept("");
+                return true;
+            }
+            if (this.commands >= MAX_COMMANDS) {
+                return false;
+            }
+            this.commands++;
             consumer.accept(validation.normalized());
             return true;
         }
