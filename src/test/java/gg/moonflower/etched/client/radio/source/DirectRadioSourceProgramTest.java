@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 
-class DirectRadioProgramResolverTest {
+class DirectRadioSourceProgramTest {
 
     private static final RadioNetworkPolicy ALLOW_TEST_SERVER = uri -> {
     };
@@ -32,7 +32,7 @@ class DirectRadioProgramResolverTest {
             });
             RadioResolveContext context = context(4);
 
-            RadioSourceProgram program = new DirectRadioProgramResolver()
+            RadioSourceProgram program = new DirectRadioSourceResolver()
                     .resolveProgram(server.uri("/live"), context);
 
             assertEquals(0, requests.get());

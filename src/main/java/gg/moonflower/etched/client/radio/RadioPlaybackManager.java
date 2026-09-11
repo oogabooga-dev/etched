@@ -26,7 +26,7 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     private static final int MAX_ACTIVE_RADIOS = 8;
     private static final int MAX_QUEUED_RADIOS = 32;
     private static final RadioPlaybackManager INSTANCE = new RadioPlaybackManager(
-            new LegacyRadioPlaybackDriver(), new ProductionRadioSessionDriver(), new MinecraftRadioPlaybackEffects(),
+            PlaybackDriver.NOOP, new ProductionRadioSessionDriver(), new MinecraftRadioPlaybackEffects(),
             RadioReconnectController.createDefault(command -> Minecraft.getInstance().execute(command)));
 
     private final Map<RadioKey, ManagedRadio> radios;
@@ -388,6 +388,25 @@ public final class RadioPlaybackManager implements RadioClientBridge.Listener {
     }
 
     interface PlaybackDriver {
+
+        PlaybackDriver NOOP = new PlaybackDriver() {
+            @Override
+            public void apply(RadioKey key, RadioConfiguration configuration) {
+            }
+
+            @Override
+            public void stop(RadioKey key) {
+            }
+
+            @Override
+            public void tick(RadioKey key, RadioConfiguration configuration) {
+            }
+
+            @Override
+            public boolean isPlaying(RadioKey key) {
+                return false;
+            }
+        };
 
         void apply(RadioKey key, RadioConfiguration configuration);
 

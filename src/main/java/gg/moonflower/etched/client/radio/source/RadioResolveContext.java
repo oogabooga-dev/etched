@@ -1,9 +1,12 @@
 package gg.moonflower.etched.client.radio.source;
 
 import gg.moonflower.etched.client.radio.RadioCancellation;
+import gg.moonflower.etched.client.radio.net.DefaultRadioNetworkPolicy;
 import gg.moonflower.etched.client.radio.net.RadioHttpTransport;
-import gg.moonflower.etched.client.radio.net.RadioHttpTransportFactory;
+import gg.moonflower.etched.client.radio.net.RadioHttpTransportImpl;
 import gg.moonflower.etched.client.radio.net.RadioNetworkPolicy;
+import gg.moonflower.etched.core.Etched;
+import net.minecraft.client.Minecraft;
 
 import java.util.Objects;
 
@@ -25,8 +28,13 @@ public record RadioResolveContext(RadioHttpTransport transport, RadioNetworkPoli
     }
 
     public static RadioResolveContext createDefault(RadioCancellation cancellation) {
-        RadioHttpTransportFactory.Components components = RadioHttpTransportFactory.createDefaultComponents();
-        return new RadioResolveContext(components.transport(), components.networkPolicy(),
-                cancellation, RadioResolveLimits.DEFAULT);
+        RadioNetworkPolicy networkPolicy = new DefaultRadioNetworkPolicy(
+                Etched.CLIENT_CONFIG.allowPrivateNetworkStations::get);
+        RadioHttpTransport transport = new RadioHttpTransportImpl(
+                Minecraft.getInstance().getProxy(), networkPolicy,
+                RadioHttpTransportImpl.DEFAULT_CONNECT_TIMEOUT,
+                RadioHttpTransportImpl.DEFAULT_READ_TIMEOUT,
+                RadioHttpTransportImpl.DEFAULT_MAX_REDIRECTS);
+        return new RadioResolveContext(transport, networkPolicy, cancellation, RadioResolveLimits.DEFAULT);
     }
 }

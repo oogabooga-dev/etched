@@ -3,7 +3,7 @@ package gg.moonflower.etched.client.radio;
 import gg.moonflower.etched.client.radio.sound.RadioSoundInstance;
 import gg.moonflower.etched.client.radio.source.BandcampRadioSourceResolver;
 import gg.moonflower.etched.client.radio.source.CompositeRadioSourceResolver;
-import gg.moonflower.etched.client.radio.source.DirectRadioProgramResolver;
+import gg.moonflower.etched.client.radio.source.DirectRadioSourceResolver;
 import gg.moonflower.etched.client.radio.source.RadioResolveContext;
 import gg.moonflower.etched.client.radio.source.RadioResolvedSource;
 import gg.moonflower.etched.client.radio.source.RadioSourceException;
@@ -64,7 +64,7 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         this(new CompositeRadioSourceResolver(List.of(
                         new SoundCloudRadioSourceResolver(),
                         new BandcampRadioSourceResolver(),
-                        new DirectRadioProgramResolver())),
+                        new DirectRadioSourceResolver())),
                 RadioResolveContext::createDefault,
                 boundedExecutor("Etched radio resolver", 2),
                 boundedExecutor("Etched radio producer", 8),
