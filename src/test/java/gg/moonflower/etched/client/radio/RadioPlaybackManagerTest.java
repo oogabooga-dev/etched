@@ -2,12 +2,10 @@ package gg.moonflower.etched.client.radio;
 
 import gg.moonflower.etched.common.radio.RadioConfiguration;
 import gg.moonflower.etched.client.radio.net.RadioTransportException;
-import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.Test;
 
@@ -31,8 +29,7 @@ class RadioPlaybackManagerTest {
             30_000L, 0.0D, () -> 0.5D);
 
     static {
-        SharedConstants.tryDetectVersion();
-        Bootstrap.bootStrap();
+        MinecraftTestBootstrap.bootStrap();
     }
 
     private static final ResourceKey<Level> FIRST_DIMENSION = dimension("first");

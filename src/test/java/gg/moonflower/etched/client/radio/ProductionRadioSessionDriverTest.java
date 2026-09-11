@@ -13,13 +13,11 @@ import gg.moonflower.etched.client.radio.source.RadioSourceProgram;
 import gg.moonflower.etched.client.radio.source.RadioSourceProgramResolver;
 import gg.moonflower.etched.client.radio.stream.RadioAudioStream;
 import gg.moonflower.etched.common.radio.RadioConfiguration;
-import net.minecraft.SharedConstants;
 import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,8 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 class ProductionRadioSessionDriverTest {
 
     static {
-        SharedConstants.tryDetectVersion();
-        Bootstrap.bootStrap();
+        MinecraftTestBootstrap.bootStrap();
     }
 
     private static final ResourceKey<Level> DIMENSION = ResourceKey.create(Registries.DIMENSION,

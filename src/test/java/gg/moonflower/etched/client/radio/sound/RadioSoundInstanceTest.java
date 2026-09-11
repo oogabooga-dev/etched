@@ -1,16 +1,15 @@
 package gg.moonflower.etched.client.radio.sound;
 
 import gg.moonflower.etched.client.radio.RadioKey;
+import gg.moonflower.etched.client.radio.MinecraftTestBootstrap;
 import gg.moonflower.etched.client.radio.RadioSession;
 import gg.moonflower.etched.client.radio.stream.RadioAudioStream;
-import net.minecraft.SharedConstants;
 import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.client.sounds.WeighedSoundEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.Bootstrap;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.Test;
@@ -29,8 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RadioSoundInstanceTest {
 
     static {
-        SharedConstants.tryDetectVersion();
-        Bootstrap.bootStrap();
+        MinecraftTestBootstrap.bootStrap();
     }
 
     @Test
