@@ -55,8 +55,9 @@ versioning beginning with version 4.0.0 and is based on Etched 3.0.4.
   playlists, and provider-generated media URLs.
 - Blocked private and loopback destinations by default and always blocked
   selected special-purpose ranges and mixed public/private DNS answers.
-- Added bounded DNS, connection, and read timeouts, redirects, source bodies,
-  playlist depth and entries, worker queues, and reconnect delays.
+- Added bounded DNS, connection, and read timeouts, redirects, playlist and
+  provider response bodies, playlist depth and entries, streaming buffers,
+  worker queues, and reconnect delays.
 - Added cancellation-aware network ownership and Minecraft proxy support.
 - Removed deliberate transmission of Minecraft usernames and UUIDs from the
   new radio request path.

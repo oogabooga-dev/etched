@@ -6,20 +6,25 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   JLAYER_SOURCES_URL: https://repo.maven.apache.org/maven2/javazoom/jlayer/1.0.1/jlayer-1.0.1-sources.jar
   JLAYER_SOURCES_SHA256: ecde410fc8940ab5d8d5a1d5c585870a3a194f4001701e66a27b8dd8cb7b75ce
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.assets.outputs.version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Java 17
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -43,6 +48,16 @@ jobs:
 
           if [[ -z "$version" || "$GITHUB_REF_NAME" != "v$version" ]]; then
             printf 'Tag %s does not match mod_version %s\n' "$GITHUB_REF_NAME" "$version" >&2
+            exit 1
+          fi
+
+          if [[ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]]; then
+            printf 'Release tag %s must be annotated\n' "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            printf 'Tagged commit %s is not on origin/master\n' "$GITHUB_SHA" >&2
             exit 1
           fi
 
@@ -83,18 +98,42 @@ jobs:
 
           printf 'version=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Upload verified release inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-inputs
+          path: |
+            release
+            RELEASE_NOTES.md
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified release inputs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-inputs
+          path: staging
+
       - name: Create GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           prerelease=()
-          if [[ "${{ steps.assets.outputs.version }}" == *-* ]]; then
+          if [[ "${{ needs.build.outputs.version }}" == *-* ]]; then
             prerelease+=(--prerelease)
           fi
 
-          gh release create "$GITHUB_REF_NAME" release/* \
+          gh release create "$GITHUB_REF_NAME" staging/release/* \
             --verify-tag \
-            --title "Re-Etched ${{ steps.assets.outputs.version }} for Forge 1.20.1" \
-            --generate-notes \
+            --title "Re-Etched ${{ needs.build.outputs.version }} for Forge 1.20.1" \
+            --notes-file staging/RELEASE_NOTES.md \
             "${prerelease[@]}"

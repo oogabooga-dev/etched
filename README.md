@@ -84,14 +84,14 @@ Re-Etched applies the following controls:
 - DNS results, redirects, playlist entries, and provider media URLs are
   checked before use;
 - private and loopback destinations are disabled by default;
-- mixed public/private DNS answers and special-purpose destinations are
+- mixed public/private DNS answers and selected special-purpose destinations are
   rejected;
 - the client-only `Allow Private Network Stations` option can enable private
   and loopback destinations, but should only be used with trusted servers;
 - requests use Minecraft's configured proxy, explicit timeouts, and bounded
   redirects;
-- source bodies, playlists, resolution work, buffers, worker queues, and
-  reconnect delays are bounded;
+- playlist and provider response bodies, resolution work, streaming buffers,
+  worker queues, and reconnect delays are bounded;
 - active work is cancelled when playback stops or the world unloads.
 
 Default limits include a 5-second DNS timeout, 10-second connection timeout,
@@ -144,11 +144,17 @@ retained by the project are:
 - Farcr, art;
 - AstraZoey, sound design.
 
+Inherited translation contributors identified in project history include
+Koha, Ryo TAGAMI, DoltHHaven, CerealConJugo, SimGitHub5, Draacoun,
+BardinTheDwarf, unroman, and Yizhouuu.
+
 Re-Etched modifications are maintained by
 [oogabooga-dev](https://github.com/oogabooga-dev).
 
 Except where separately identified, the code is distributed under
-GPL-3.0-only. Inherited Etched resources have separate reserved-rights terms;
-see [LICENSE](LICENSE). Re-Etched does not claim ownership of original Etched
-resources. Embedded third-party components and separately licensed source files
-are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+GPL-3.0-only. The upstream license names Etched's former module resource
+directories as reserved; those resources were later consolidated under
+`src/main/resources`. Re-Etched conservatively treats inherited resources as
+reserved while their status is clarified and does not claim ownership of them.
+See [LICENSE](LICENSE) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,0 +1,39 @@
+# Re-Etched 4.0.0-beta.1 for Forge 1.20.1
+
+Re-Etched is an unofficial, community-maintained fork of
+[Etched 3.0.4](https://github.com/jacksonhardaway/etched). It is not affiliated
+with or endorsed by Moonflower Studio.
+
+## Highlights
+
+- Replaced the legacy radio download path with cancellable per-radio streams.
+- Added direct MP3 and Ogg/Vorbis playback, M3U and PLS playlists, SoundCloud
+  progressive MP3 resolution, Bandcamp `mp3-128` resolution, and ICY metadata.
+- Added bounded resolution, buffering, reconnect behavior, and private-network
+  destination controls.
+- Preserved the Etched 3.0.4 mod ID, network protocol, registry namespace, and
+  active-radio state for compatibility.
+
+## Requirements
+
+- Minecraft 1.20.1
+- Forge 47.x; Forge 47.4.10 is the tested and recommended version
+- Java 17
+- Re-Etched installed on both the client and dedicated server
+
+## Installation
+
+Back up the world before installing this beta. Remove the original Etched JAR
+and any older Re-Etched JAR before adding `re-etched-4.0.0-beta.1.jar` to the
+client and server `mods` directories. Etched and Re-Etched cannot be installed
+together because both use the `etched` mod ID.
+
+## Known Limitations
+
+- AAC, AAC+, and HLS streams are not supported.
+- SoundCloud and Bandcamp support depends on external service formats.
+- Radio inputs must be absolute HTTP or HTTPS URLs.
+- Downgrading to original Etched may discard Re-Etched's stopped-radio state.
+
+See the full [changelog](https://github.com/oogabooga-dev/re-etched/blob/v4.0.0-beta.1/CHANGELOG.md)
+and [release source](https://github.com/oogabooga-dev/re-etched/tree/v4.0.0-beta.1).

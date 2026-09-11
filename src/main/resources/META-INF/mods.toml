@@ -1,7 +1,7 @@
 modLoader = "javafml"
 loaderVersion = "[${forge_loader_version},48)"
 issueTrackerURL = "https://github.com/oogabooga-dev/re-etched/issues"
-license = "GPL-3.0-only and bundled third-party terms; original Etched resources reserved, see LICENSE"
+license = "GPL-3.0-only for project code; bundled third-party and inherited resource terms, see META-INF/LICENSE_RE-ETCHED and META-INF/THIRD_PARTY_NOTICES.md"
 
 [[mods]]
 modId = "${mod_id}"
