@@ -3,7 +3,7 @@
 Notable Re-Etched changes are documented here. Re-Etched uses independent
 versioning beginning with version 4.0.0 and is based on Etched 3.0.4.
 
-## [4.0.0-beta.1] - Unreleased
+## [4.0.0-beta.1] - 2026-09-12
 
 ### Added
 
