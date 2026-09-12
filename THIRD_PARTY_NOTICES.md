@@ -19,9 +19,13 @@ Copyright (c) 2021 Moonflower Studio
 
 Those resources were later consolidated under `src/main/resources`, a path not
 named by the historical directory list. Re-Etched conservatively treats the
-inherited models, textures, sounds, translations, data files, and branding as
+inherited models, textures, sounds, translations, and data files as
 reserved while their status is clarified. Re-Etched does not claim ownership
 of them, and this notice does not grant additional rights to them.
+
+The Re-Etched logo and icon are original fork branding and are not inherited
+from Etched. They were drawn manually in GIMP by the Re-Etched maintainer,
+without generative AI.
 
 Original credits retained from Etched:
 

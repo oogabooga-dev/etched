@@ -8,13 +8,13 @@ modId = "${mod_id}"
 version = "${mod_version}"
 displayName = "${mod_name}"
 description = "${mod_description}"
-logoFile = "${mod_id}.logo.png"
+logoFile = "re-etched.logo.png"
 authors = "Moonflower Studio (original); oogabooga-dev (Re-Etched fork)"
 credits = "Ocelot, Jackson, Farcr (Art), AstraZoey (Sound Design)"
 displayURL = "https://github.com/oogabooga-dev/re-etched"
 
 [modproperties.${ mod_id }]
-catalogueImageIcon = "${mod_id}.icon.png"
+catalogueImageIcon = "re-etched.icon.png"
 
 [[dependencies.${ mod_id }]]
 modId = "forge"
