@@ -8,10 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  JLAYER_SOURCES_URL: https://repo.maven.apache.org/maven2/javazoom/jlayer/1.0.1/jlayer-1.0.1-sources.jar
-  JLAYER_SOURCES_SHA256: ecde410fc8940ab5d8d5a1d5c585870a3a194f4001701e66a27b8dd8cb7b75ce
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -90,11 +86,6 @@ jobs:
           cp "${production[0]}" "release/$jar_name"
           jar_sha256="$(sha256sum "release/$jar_name")"
           printf '%s  %s\n' "${jar_sha256%% *}" "$jar_name" > "release/$jar_name.sha256"
-
-          sources_name="jlayer-1.0.1-sources.jar"
-          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
-            --output "release/$sources_name" "$JLAYER_SOURCES_URL"
-          printf '%s  %s\n' "$JLAYER_SOURCES_SHA256" "release/$sources_name" | sha256sum --check --strict -
 
           printf 'version=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 

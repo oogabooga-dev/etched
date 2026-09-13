@@ -60,7 +60,8 @@ against SHA-256
 `850508c837454a1b06017c32a36876fae516de1e89a829f725fee1e6dcc52000`.
 The build script and exact Re-Etched source corresponding to a release are
 available from that release's Git tag. The original JLayer source archive is
-supplied alongside release binaries.
+available from the Maven repository linked above with SHA-256
+`ecde410fc8940ab5d8d5a1d5c585870a3a194f4001701e66a27b8dd8cb7b75ce`.
 
 JLayer source preserves additional upstream notices, including:
 
@@ -73,8 +74,8 @@ All Rights Reserved
 The `huffcodetab.java` source also retains a historical statement that the 1991
 simulation code was not for public distribution until verified and approved by
 the MPEG/audio committee. That statement appears alongside JLayer's later GNU
-Library General Public License notice. Re-Etched supplies the upstream source
-archive unchanged and does not attempt to resolve those upstream notices.
+Library General Public License notice. Re-Etched does not attempt to resolve
+those upstream notices.
 
 ## OpenJDK WaveFileReader
 
