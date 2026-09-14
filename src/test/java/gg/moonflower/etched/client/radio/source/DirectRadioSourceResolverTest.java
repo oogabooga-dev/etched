@@ -598,6 +598,7 @@ class DirectRadioSourceResolverTest {
             try {
                 assertTrue(bodyStarted.await(1, TimeUnit.SECONDS));
                 session.stop();
+                release.countDown();
                 ExecutionException exception = assertThrows(ExecutionException.class,
                         () -> result.get(2, TimeUnit.SECONDS));
                 assertInstanceOf(CancellationException.class, exception.getCause());

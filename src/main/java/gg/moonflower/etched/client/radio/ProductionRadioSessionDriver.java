@@ -252,18 +252,26 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
             track.cancellation.throwIfCancelled();
             RadioResolveContext trackContext = this.contexts.create(track.cancellation);
             source = active.program.openTrack(track.index, trackContext);
-            RadioStreamPipeline.Preparation preparation;
+            if (!this.isCurrentTrack(active, track)) {
+                source.close();
+                return;
+            }
+
+            RadioStreamPipeline.Preparation preparation = RadioStreamPipeline.prepare(
+                    source, track.cancellation, this.producerExecutor, this.decoderExecutor,
+                    this.forceStereo.getAsBoolean(),
+                    title -> active.session.offerStreamTitle(active.attempt, title));
+            boolean accepted;
             synchronized (this.lock) {
-                if (!this.isCurrentTrackLocked(active, track)) {
-                    source.close();
-                    return;
+                accepted = this.isCurrentTrackLocked(active, track);
+                if (accepted) {
+                    track.preparation = preparation;
                 }
-                track.source = source;
-                preparation = RadioStreamPipeline.prepare(source, track.cancellation,
-                        this.producerExecutor, this.decoderExecutor, this.forceStereo.getAsBoolean(),
-                        title -> active.session.offerStreamTitle(active.attempt, title));
-                track.source = null;
-                track.preparation = preparation;
+            }
+            if (!accepted) {
+                preparation.close();
+                source = null;
+                return;
             }
             source = null;
             preparation.stream().whenComplete((audio, failure) -> this.dispatch(
@@ -293,14 +301,18 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
                 active.attempt.cancellation(), parameters.volume(), parameters.attenuationDistance(),
                 () -> this.streamHandedOff(active, track, preparation, audio),
                 () -> this.dispatch(() -> this.soundStopped(active, track), active));
+        boolean accepted;
         synchronized (this.lock) {
-            if (!this.isCurrentTrackLocked(active, track) || track.preparation != preparation) {
-                sound.requestStop();
-                preparation.close();
-                return;
+            accepted = this.isCurrentTrackLocked(active, track) && track.preparation == preparation;
+            if (accepted) {
+                track.audio = audio;
+                track.sound = sound;
             }
-            track.audio = audio;
-            track.sound = sound;
+        }
+        if (!accepted) {
+            sound.requestStop();
+            preparation.close();
+            return;
         }
         audio.termination().whenComplete((termination, terminalFailure) ->
                 this.observeTermination(active, track, termination, terminalFailure));
@@ -509,7 +521,6 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         RadioSoundInstance sound;
         RadioStreamPipeline.Preparation preparation;
         RadioAudioStream audio;
-        RadioResolvedSource source;
         Future<?> worker;
         boolean transferred;
         synchronized (this.lock) {
@@ -523,8 +534,6 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
             track.preparation = null;
             audio = track.audio;
             track.audio = null;
-            source = track.source;
-            track.source = null;
             worker = track.worker;
             track.worker = null;
             transferred = track.transferred;
@@ -554,10 +563,8 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
             preparation.close();
         } else if (transferred && audio != null && !soundOutputOwnsAudio) {
             track.cancellation.cancel();
-            closeQuietly(audio);
-        }
-        if (source != null) {
-            source.close();
+            RadioAudioStream orphaned = audio;
+            RadioResourceDisposer.dispose(() -> closeQuietly(orphaned));
         }
     }
 
@@ -694,7 +701,6 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         private final int index;
         private final RadioCancellation cancellation = new RadioCancellation();
         private Future<?> worker;
-        private RadioResolvedSource source;
         private RadioStreamPipeline.Preparation preparation;
         private RadioAudioStream audio;
         private RadioSoundInstance sound;

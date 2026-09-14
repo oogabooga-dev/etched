@@ -22,6 +22,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -549,6 +552,113 @@ class RadioHttpTransportImplTest {
     }
 
     @Test
+    void cancellationDoesNotWaitForBlockingDisconnect() throws Exception {
+        CountDownLatch disconnectStarted = new CountDownLatch(1);
+        CountDownLatch releaseDisconnect = new CountDownLatch(1);
+        TrackingConnection connection = new TrackingConnection() {
+            @Override
+            public void disconnect() {
+                disconnectStarted.countDown();
+                await(releaseDisconnect);
+                super.disconnect();
+            }
+        };
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
+                Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
+                (uri, proxy) -> connection);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("http://radio.example/live");
+        RadioHttpResponse response = transport.execute(
+                RadioHttpRequest.audio(URI.create(attempt.source())), attempt.cancellation());
+
+        ExecutorService clientThread = Executors.newSingleThreadExecutor();
+        Future<Boolean> stopped = clientThread.submit(session::stop);
+        try {
+            assertTrue(stopped.get(5, TimeUnit.SECONDS));
+            assertTrue(disconnectStarted.await(5, TimeUnit.SECONDS));
+        } finally {
+            releaseDisconnect.countDown();
+            response.close();
+            clientThread.shutdownNow();
+        }
+        await(() -> connection.disconnected);
+    }
+
+    @Test
+    void cancellationDoesNotWaitForBlockingResponseClose() throws Exception {
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch releaseClose = new CountDownLatch(1);
+        AtomicReference<Boolean> bodyClosed = new AtomicReference<>(false);
+        TrackingConnection connection = new TrackingConnection() {
+            @Override
+            public InputStream getInputStream() {
+                return new ByteArrayInputStream(new byte[0]) {
+                    @Override
+                    public void close() throws IOException {
+                        closeStarted.countDown();
+                        await(releaseClose);
+                        bodyClosed.set(true);
+                        super.close();
+                    }
+                };
+            }
+        };
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
+                Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
+                (uri, proxy) -> connection);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("http://radio.example/live");
+        RadioHttpResponse response = transport.execute(
+                RadioHttpRequest.audio(URI.create(attempt.source())), attempt.cancellation());
+
+        ExecutorService clientThread = Executors.newSingleThreadExecutor();
+        Future<Boolean> stopped = clientThread.submit(session::stop);
+        try {
+            assertTrue(stopped.get(5, TimeUnit.SECONDS));
+            assertTrue(closeStarted.await(5, TimeUnit.SECONDS));
+        } finally {
+            releaseClose.countDown();
+            response.close();
+            clientThread.shutdownNow();
+        }
+        await(bodyClosed::get);
+    }
+
+    @Test
+    void cancellationClosesResponseBodyWhenDisconnectFails() throws Exception {
+        AtomicReference<Boolean> bodyClosed = new AtomicReference<>(false);
+        TrackingConnection connection = new TrackingConnection() {
+            @Override
+            public void disconnect() {
+                throw new IllegalStateException("disconnect failed");
+            }
+
+            @Override
+            public InputStream getInputStream() {
+                return new ByteArrayInputStream(new byte[0]) {
+                    @Override
+                    public void close() throws IOException {
+                        bodyClosed.set(true);
+                        super.close();
+                    }
+                };
+            }
+        };
+        RadioHttpTransportImpl transport = new RadioHttpTransportImpl(
+                Proxy.NO_PROXY, ALLOW_TEST_SERVER, TEST_TIMEOUT, TEST_TIMEOUT, 0,
+                (uri, proxy) -> connection);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start("http://radio.example/live");
+        RadioHttpResponse response = transport.execute(
+                RadioHttpRequest.audio(URI.create(attempt.source())), attempt.cancellation());
+
+        session.stop();
+
+        await(bodyClosed::get);
+        response.close();
+    }
+
+    @Test
     void classifiesMidBodyDisconnectAsRecoverableTransportFailure() throws Exception {
         TrackingConnection connection = new TrackingConnection() {
             @Override
@@ -623,7 +733,7 @@ class RadioHttpTransportImplTest {
     }
 
     @Test
-    void cancellationDisconnectsABlockedBodyRead() throws Exception {
+    void cancellationWinsAfterBlockedBodyReadReturns() throws Exception {
         CountDownLatch bodyStarted = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         try (TestHttpServer server = new TestHttpServer()) {
@@ -648,6 +758,7 @@ class RadioHttpTransportImplTest {
                 });
 
                 session.stop();
+                release.countDown();
 
                 ExecutionException exception = assertThrows(ExecutionException.class,
                         () -> read.get(2, TimeUnit.SECONDS));
@@ -684,8 +795,7 @@ class RadioHttpTransportImplTest {
         assertEquals("GET", connection.getRequestMethod());
         assertEquals((int) TEST_TIMEOUT.toMillis(), connection.getConnectTimeout());
         assertEquals((int) TEST_TIMEOUT.toMillis(), connection.getReadTimeout());
-        assertTrue(connection.disconnected);
-        assertTrue(connection.body.closed);
+        await(() -> connection.disconnected && connection.body.closed);
         response.close();
     }
 
@@ -742,10 +852,20 @@ class RadioHttpTransportImplTest {
         }
     }
 
+    private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("Timed out waiting for asynchronous radio cleanup");
+            }
+            Thread.sleep(10L);
+        }
+    }
+
     private static class TrackingConnection extends HttpURLConnection {
 
         private final TrackingInputStream body = new TrackingInputStream();
-        private boolean disconnected;
+        private volatile boolean disconnected;
 
         private TrackingConnection() throws IOException {
             super(URI.create("http://radio.example/live").toURL());
@@ -788,7 +908,7 @@ class RadioHttpTransportImplTest {
 
     private static final class TrackingInputStream extends ByteArrayInputStream {
 
-        private boolean closed;
+        private volatile boolean closed;
 
         private TrackingInputStream() {
             super(new byte[0]);

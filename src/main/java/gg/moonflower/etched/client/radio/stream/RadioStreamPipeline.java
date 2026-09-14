@@ -1,6 +1,7 @@
 package gg.moonflower.etched.client.radio.stream;
 
 import gg.moonflower.etched.client.radio.RadioCancellation;
+import gg.moonflower.etched.client.radio.RadioResourceDisposer;
 import gg.moonflower.etched.client.radio.RadioFailure;
 import gg.moonflower.etched.client.radio.source.RadioResolvedSource;
 
@@ -187,7 +188,7 @@ public final class RadioStreamPipeline {
                         return;
                     }
                 }
-                closeQuietly(audio);
+                RadioResourceDisposer.dispose(() -> closeQuietly(audio));
             });
         }
 
@@ -233,7 +234,8 @@ public final class RadioStreamPipeline {
                 this.buffer.close();
             }
             if (audio != null) {
-                closeQuietly(audio);
+                RadioAudioStream orphaned = audio;
+                RadioResourceDisposer.dispose(() -> closeQuietly(orphaned));
             }
         }
 

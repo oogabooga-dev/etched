@@ -2,6 +2,7 @@ package gg.moonflower.etched.client.radio.sound;
 
 import gg.moonflower.etched.client.radio.RadioCancellation;
 import gg.moonflower.etched.client.radio.RadioKey;
+import gg.moonflower.etched.client.radio.RadioResourceDisposer;
 import gg.moonflower.etched.client.radio.stream.RadioAudioStream;
 import gg.moonflower.etched.api.sound.SoundStopListener;
 import gg.moonflower.etched.core.Etched;
@@ -92,10 +93,7 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance impl
             this.untransferredClosed |= closeStream;
         }
         if (closeStream) {
-            try {
-                this.stream.close();
-            } catch (java.io.IOException ignored) {
-            }
+            RadioResourceDisposer.dispose(this::closeUntransferred);
         }
     }
 
@@ -128,7 +126,7 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance impl
         }
         if (unavailable) {
             if (closeStream) {
-                this.closeUntransferred();
+                RadioResourceDisposer.dispose(this::closeUntransferred);
             }
             return CompletableFuture.failedFuture(
                     new IllegalStateException("Radio sound was stopped before stream handoff"));
@@ -142,7 +140,7 @@ public final class RadioSoundInstance extends AbstractTickableSoundInstance impl
                 this.stopRequested = true;
             }
             this.stop();
-            this.closeUntransferred();
+            RadioResourceDisposer.dispose(this::closeUntransferred);
             return CompletableFuture.failedFuture(exception);
         }
         return CompletableFuture.completedFuture(this.stream);

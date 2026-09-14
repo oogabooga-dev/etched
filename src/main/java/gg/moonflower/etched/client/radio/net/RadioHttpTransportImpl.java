@@ -2,6 +2,7 @@ package gg.moonflower.etched.client.radio.net;
 
 import gg.moonflower.etched.client.radio.RadioCancellation;
 import gg.moonflower.etched.client.radio.RadioFailure;
+import gg.moonflower.etched.client.radio.RadioResourceDisposer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -82,7 +83,7 @@ public final class RadioHttpTransportImpl implements RadioHttpTransport {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(cancellation, "cancellation");
         ActiveExchange exchange = new ActiveExchange();
-        cancellation.onCancel(exchange::closeTerminal);
+        cancellation.onCancel(exchange::cancelTerminal);
         URI current = removeFragment(request.uri());
         Set<URI> visited = new HashSet<>();
         int redirects = 0;
@@ -318,14 +319,19 @@ public final class RadioHttpTransportImpl implements RadioHttpTransport {
         private FutureTask<Void> connectTask;
         private boolean terminal;
 
-        synchronized boolean installConnection(HttpURLConnection connection) {
-            if (this.terminal) {
-                connection.disconnect();
-                return false;
+        boolean installConnection(HttpURLConnection connection) {
+            boolean installed;
+            synchronized (this) {
+                installed = !this.terminal;
+                if (installed) {
+                    this.connection = connection;
+                    this.body = null;
+                }
             }
-            this.connection = connection;
-            this.body = null;
-            return true;
+            if (!installed) {
+                close(connection, null);
+            }
+            return installed;
         }
 
         void connect(HttpURLConnection connection) throws IOException {
@@ -365,13 +371,18 @@ public final class RadioHttpTransportImpl implements RadioHttpTransport {
             }
         }
 
-        synchronized boolean installBody(HttpURLConnection connection, InputStream body) {
-            if (this.terminal || this.connection != connection) {
-                close(connection, body);
-                return false;
+        boolean installBody(HttpURLConnection connection, InputStream body) {
+            boolean installed;
+            synchronized (this) {
+                installed = !this.terminal && this.connection == connection;
+                if (installed) {
+                    this.body = body;
+                }
             }
-            this.body = body;
-            return true;
+            if (!installed) {
+                close(connection, body);
+            }
+            return installed;
         }
 
         void closeCurrent() {
@@ -391,11 +402,25 @@ public final class RadioHttpTransportImpl implements RadioHttpTransport {
         }
 
         void closeTerminal() {
+            CloseState state = this.detachTerminal();
+            if (state != null) {
+                close(state.connection(), state.body());
+            }
+        }
+
+        void cancelTerminal() {
+            CloseState state = this.detachTerminal();
+            if (state != null) {
+                RadioResourceDisposer.dispose(() -> close(state.connection(), state.body()));
+            }
+        }
+
+        private CloseState detachTerminal() {
             HttpURLConnection connection;
             InputStream body;
             synchronized (this) {
                 if (this.terminal) {
-                    return;
+                    return null;
                 }
                 this.terminal = true;
                 connection = this.connection;
@@ -407,19 +432,29 @@ public final class RadioHttpTransportImpl implements RadioHttpTransport {
                 this.connection = null;
                 this.body = null;
             }
-            close(connection, body);
+            return new CloseState(connection, body);
         }
 
         private static void close(HttpURLConnection connection, InputStream body) {
-            if (connection != null) {
-                connection.disconnect();
+            try {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            } finally {
+                closeBody(body);
             }
+        }
+
+        private static void closeBody(InputStream body) {
             if (body != null) {
                 try {
                     body.close();
                 } catch (IOException ignored) {
                 }
             }
+        }
+
+        private record CloseState(HttpURLConnection connection, InputStream body) {
         }
     }
 
