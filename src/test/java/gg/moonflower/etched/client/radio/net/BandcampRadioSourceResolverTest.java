@@ -267,8 +267,18 @@ class BandcampRadioSourceResolverTest {
         assertThrows(CancellationException.class,
                 () -> new BandcampRadioSourceResolver().resolveProgram(ALBUM, context));
 
-        assertTrue(page.disconnected);
+        await(() -> page.disconnected);
         router.assertExhausted();
+    }
+
+    private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("Timed out waiting for asynchronous radio cleanup");
+            }
+            Thread.sleep(10L);
+        }
     }
 
     private static RadioResolveContext context(RadioHttpTransport transport, RadioResolveLimits limits) {
@@ -353,7 +363,7 @@ class BandcampRadioSourceResolverTest {
         private final int status;
         private final byte[] bytes;
         private final Map<String, String> requestProperties = new HashMap<>();
-        private boolean disconnected;
+        private volatile boolean disconnected;
         private Runnable onFirstRead;
 
         private TrackingConnection(URI uri, int status, byte[] bytes) throws IOException {

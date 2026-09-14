@@ -183,7 +183,7 @@ class RadioBufferedInputStreamTest {
         stream.close();
 
         assertInstanceOf(IOException.class, read.get(2, TimeUnit.SECONDS));
-        assertEquals(1, source.closeCount.get());
+        await(() -> source.closeCount.get() == 1);
         assertEquals(RadioBufferedInputStream.State.CANCELLED, stream.state());
     }
 
@@ -201,7 +201,7 @@ class RadioBufferedInputStreamTest {
         assertEquals(RadioBufferedInputStream.State.CANCELLED, stream.state());
         assertEquals(0, stream.bufferedBytes());
         assertThrows(java.util.concurrent.CancellationException.class, stream::read);
-        assertEquals(1, source.closeCount.get());
+        await(() -> source.closeCount.get() == 1);
     }
 
     @Test
@@ -240,14 +240,14 @@ class RadioBufferedInputStreamTest {
     }
 
     @Test
-    void rejectedSubmissionClosesTransferredSource() {
+    void rejectedSubmissionClosesTransferredSource() throws Exception {
         ExecutorService rejecting = Executors.newSingleThreadExecutor();
         rejecting.shutdownNow();
         CloseCountingInputStream source = new CloseCountingInputStream(new byte[1]);
 
         assertThrows(RejectedExecutionException.class, () -> new RadioBufferedInputStream(
                 source, cancellation(), rejecting, 8, 4, 4));
-        assertEquals(1, source.closeCount.get());
+        await(() -> source.closeCount.get() == 1);
     }
 
     @Test
@@ -274,7 +274,7 @@ class RadioBufferedInputStreamTest {
             stream.close();
 
             assertTrue(executor.getQueue().isEmpty());
-            assertEquals(1, source.closeCount.get());
+            await(() -> source.closeCount.get() == 1);
         } finally {
             release.countDown();
             executor.shutdownNow();
@@ -307,6 +307,16 @@ class RadioBufferedInputStreamTest {
 
     private static RadioBufferedInputStream.Startup startup(RadioBufferedInputStream stream) throws Exception {
         return stream.startup().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    }
+
+    private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("Timed out waiting for asynchronous radio cleanup");
+            }
+            Thread.sleep(10L);
+        }
     }
 
     private static final class PausedInputStream extends InputStream {

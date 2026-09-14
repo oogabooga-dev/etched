@@ -1,6 +1,7 @@
 package gg.moonflower.etched.client.radio.stream;
 
 import gg.moonflower.etched.client.radio.RadioCancellation;
+import gg.moonflower.etched.client.radio.RadioResourceDisposer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -346,11 +347,11 @@ public final class RadioBufferedInputStream extends InputStream {
             this.lock.unlock();
         }
         completion.complete(this.startup);
-        this.closeSource();
         Future<?> task = this.producerTask;
         if (task != null) {
             cancel(this.producerExecutor, task);
         }
+        RadioResourceDisposer.dispose(this::closeSource);
     }
 
     private static void cancel(ExecutorService executor, Future<?> future) {

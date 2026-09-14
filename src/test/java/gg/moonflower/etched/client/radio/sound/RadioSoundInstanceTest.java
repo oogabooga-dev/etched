@@ -18,6 +18,11 @@ import javax.sound.sampled.AudioFormat;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -64,7 +69,7 @@ class RadioSoundInstanceTest {
     }
 
     @Test
-    void cancellationStopsTickableSoundBeforeHandoff() {
+    void cancellationStopsTickableSoundBeforeHandoff() throws Exception {
         RadioSession session = new RadioSession();
         RadioSession.Attempt attempt = session.start("https://radio.example/live");
         FakeAudioStream stream = new FakeAudioStream();
@@ -74,11 +79,11 @@ class RadioSoundInstanceTest {
         sound.tick();
         assertTrue(sound.isStopped());
         assertTrue(sound.getStream(null, null, false).isCompletedExceptionally());
-        assertEquals(1, stream.closeCount.get());
+        await(() -> stream.closeCount.get() == 1);
     }
 
     @Test
-    void callbackFailureClosesUntransferredStream() {
+    void callbackFailureClosesUntransferredStream() throws Exception {
         RadioSession.Attempt attempt = new RadioSession().start("https://radio.example/live");
         FakeAudioStream stream = new FakeAudioStream();
         ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION,
@@ -92,7 +97,25 @@ class RadioSoundInstanceTest {
         assertTrue(sound.getStream(null, null, false).isCompletedExceptionally());
         assertFalse(sound.streamTransferred());
         assertTrue(sound.isStopped());
-        assertEquals(1, stream.closeCount.get());
+        await(() -> stream.closeCount.get() == 1);
+    }
+
+    @Test
+    void stopRequestDoesNotWaitForUntransferredStreamClose() throws Exception {
+        RadioSession.Attempt attempt = new RadioSession().start("https://radio.example/live");
+        BlockingCloseAudioStream stream = new BlockingCloseAudioStream();
+        RadioSoundInstance sound = sound(attempt, stream, new AtomicInteger());
+        ExecutorService clientThread = Executors.newSingleThreadExecutor();
+        Future<?> stopped = clientThread.submit(sound::requestStop);
+
+        try {
+            stopped.get(5, TimeUnit.SECONDS);
+            assertTrue(stream.closeStarted.await(5, TimeUnit.SECONDS));
+        } finally {
+            stream.releaseClose.countDown();
+            clientThread.shutdownNow();
+        }
+        await(() -> stream.closeCount.get() == 1);
     }
 
     @Test
@@ -113,7 +136,7 @@ class RadioSoundInstanceTest {
     }
 
     private static RadioSoundInstance sound(RadioSession.Attempt attempt, RadioAudioStream stream,
-                                            AtomicInteger started) {
+                                             AtomicInteger started) {
         ResourceKey<Level> dimension = ResourceKey.create(Registries.DIMENSION,
                 new ResourceLocation("etched_test", "radio"));
         return new RadioSoundInstance(new RadioKey(dimension, new BlockPos(2, 3, 4)),
@@ -121,10 +144,20 @@ class RadioSoundInstanceTest {
                 started::incrementAndGet);
     }
 
-    private static final class FakeAudioStream implements RadioAudioStream {
+    private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("Timed out waiting for asynchronous radio cleanup");
+            }
+            Thread.sleep(10L);
+        }
+    }
+
+    private static class FakeAudioStream implements RadioAudioStream {
 
         private final CompletableFuture<Termination> termination = new CompletableFuture<>();
-        private final AtomicInteger closeCount = new AtomicInteger();
+        protected final AtomicInteger closeCount = new AtomicInteger();
 
         @Override
         public AudioFormat getFormat() {
@@ -144,6 +177,23 @@ class RadioSoundInstanceTest {
         @Override
         public void close() {
             this.closeCount.incrementAndGet();
+        }
+    }
+
+    private static final class BlockingCloseAudioStream extends FakeAudioStream {
+
+        private final CountDownLatch closeStarted = new CountDownLatch(1);
+        private final CountDownLatch releaseClose = new CountDownLatch(1);
+
+        @Override
+        public void close() {
+            this.closeStarted.countDown();
+            try {
+                this.releaseClose.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+            super.close();
         }
     }
 }
