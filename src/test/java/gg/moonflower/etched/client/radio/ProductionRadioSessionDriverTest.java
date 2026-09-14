@@ -34,6 +34,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
@@ -59,6 +60,7 @@ class ProductionRadioSessionDriverTest {
     private ExecutorService decoders;
     private HttpServer server;
     private byte[] mp3;
+    private byte[] longMp3;
     private URI baseUri;
     private AtomicInteger retryRequests;
 
@@ -70,6 +72,13 @@ class ProductionRadioSessionDriverTest {
                 throw new IllegalStateException("Missing MP3 fixture");
             }
             this.mp3 = fixture.readAllBytes();
+        }
+        try (var fixture = ProductionRadioSessionDriverTest.class.getResourceAsStream(
+                "/gg/moonflower/etched/client/radio/audio/stereo-long.mp3")) {
+            if (fixture == null) {
+                throw new IllegalStateException("Missing long MP3 fixture");
+            }
+            this.longMp3 = fixture.readAllBytes();
         }
         this.server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         this.server.createContext("/one", exchange -> this.serve(exchange, "one"));
@@ -342,6 +351,66 @@ class ProductionRadioSessionDriverTest {
         assertFalse(audio.termination().toCompletableFuture().isDone());
         audio.close();
         driver.shutdown();
+    }
+
+    @Test
+    void normalStopCancelsUpstreamForTransferredAudio() throws Exception {
+        CountDownLatch bodySent = new CountDownLatch(1);
+        CountDownLatch releaseBody = new CountDownLatch(1);
+        this.server.createContext("/stalled", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "audio/mpeg");
+            exchange.sendResponseHeaders(200, 0);
+            try (exchange; var output = exchange.getResponseBody()) {
+                output.write(this.longMp3);
+                output.flush();
+                bodySent.countDown();
+                try {
+                    releaseBody.await();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        RadioSourceProgram program = this.program(RadioSourceProgram.Kind.STATION,
+                List.of(this.track("stalled")));
+        FakeSoundOutput sounds = new FakeSoundOutput(false);
+        ProductionRadioSessionDriver driver = this.driver(fixed(program), sounds);
+        RadioSession session = new RadioSession();
+        RadioSession.Attempt attempt = session.start(this.baseUri.resolve("/stalled").toString());
+        RecordingEvents events = new RecordingEvents(session, attempt);
+        ExecutorService soundExecutor = Executors.newSingleThreadExecutor();
+
+        try {
+            driver.start(KEY, new RadioConfiguration(attempt.source(), false), session, attempt, events);
+            await(() -> sounds.audio.size() == 1);
+            assertTrue(bodySent.await(5, TimeUnit.SECONDS));
+            RadioAudioStream audio = sounds.audio.get(0);
+            Future<Throwable> read = soundExecutor.submit(() -> {
+                try {
+                    while (true) {
+                        audio.read(64 * 1024);
+                    }
+                } catch (Throwable failure) {
+                    return failure;
+                }
+            });
+            Thread.sleep(100L);
+            assertFalse(read.isDone());
+
+            session.stop();
+            driver.stop(KEY, session);
+
+            assertInstanceOf(IOException.class, read.get(2, TimeUnit.SECONDS));
+            assertEquals(RadioAudioStream.TerminalState.CANCELLED,
+                    audio.termination().toCompletableFuture().get(2, TimeUnit.SECONDS).state());
+            assertEquals(1, sounds.stops.get());
+        } finally {
+            releaseBody.countDown();
+            soundExecutor.shutdownNow();
+            session.stop();
+            driver.stop(KEY, session);
+            driver.shutdown();
+        }
     }
 
     @Test

@@ -541,9 +541,7 @@ public final class ProductionRadioSessionDriver implements RadioPlaybackManager.
         if (worker != null) {
             cancel(this.resolverExecutor, worker);
         }
-        if (!transferred) {
-            track.cancellation.cancel();
-        }
+        track.cancellation.cancel();
         boolean soundOutputOwnsAudio = false;
         if (sound != null) {
             sound.requestStop();
