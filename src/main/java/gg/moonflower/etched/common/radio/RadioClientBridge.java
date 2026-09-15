@@ -5,6 +5,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Passes radio lifecycle events to the physical client without referencing client-only classes.
@@ -12,6 +13,8 @@ import java.util.Objects;
 public final class RadioClientBridge {
 
     private static volatile Listener listener = Listener.NOOP;
+    private static ResourceKey<Level> openedMenuDimension;
+    private static BlockPos openedMenuPos;
 
     private RadioClientBridge() {
     }
@@ -40,6 +43,20 @@ public final class RadioClientBridge {
 
     public static boolean isPlaying(Level level, BlockPos pos) {
         return level.isClientSide() && listener.isPlaying(level.dimension(), pos.immutable());
+    }
+
+    public static synchronized void openMenu(Level level, BlockPos pos) {
+        if (level.isClientSide()) {
+            openedMenuDimension = level.dimension();
+            openedMenuPos = pos.immutable();
+        }
+    }
+
+    public static synchronized Optional<BlockPos> consumeOpenedMenu(Level level) {
+        BlockPos pos = level.dimension().equals(openedMenuDimension) ? openedMenuPos : null;
+        openedMenuDimension = null;
+        openedMenuPos = null;
+        return Optional.ofNullable(pos);
     }
 
     public interface Listener {

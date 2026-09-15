@@ -9,6 +9,10 @@ final class RadioEditState {
 
     private boolean loaded;
     private boolean configured;
+    private boolean playbackStateKnown;
+    private boolean playbackStarted;
+    private boolean startPending;
+    private boolean stopPending;
     private String value = "";
     private RadioUrlValidator.Result validation = RadioUrlValidator.validate("");
 
@@ -32,11 +36,28 @@ final class RadioEditState {
             return Optional.empty();
         }
         this.configured = true;
+        this.startPending = true;
+        this.stopPending = false;
         return Optional.of(this.validation.normalized());
     }
 
     boolean stop() {
-        return this.canStop();
+        if (!this.canStop()) {
+            return false;
+        }
+        this.startPending = false;
+        this.stopPending = true;
+        return true;
+    }
+
+    void receivePlaybackState(boolean started) {
+        this.playbackStateKnown = true;
+        this.playbackStarted = started;
+        if (started) {
+            this.startPending = false;
+        } else {
+            this.stopPending = false;
+        }
     }
 
     boolean loaded() {
@@ -48,7 +69,9 @@ final class RadioEditState {
     }
 
     boolean canPlay() {
-        return this.loaded && this.validation.valid() && !this.validation.normalized().isEmpty();
+        return this.loaded && this.playbackStateKnown && !this.playbackStarted
+                && !this.startPending && !this.stopPending
+                && this.validation.valid() && !this.validation.normalized().isEmpty();
     }
 
     boolean canStop() {

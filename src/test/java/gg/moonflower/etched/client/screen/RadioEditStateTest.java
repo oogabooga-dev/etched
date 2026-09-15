@@ -24,11 +24,15 @@ class RadioEditStateTest {
         RadioEditState state = new RadioEditState();
 
         assertTrue(state.receiveInitialUrl("  https://radio.example/live  "));
+        state.receivePlaybackState(false);
         assertTrue(state.loaded());
         assertTrue(state.canPlay());
         assertEquals("https://radio.example/live", state.play().orElseThrow());
 
         state.update("https://radio.example/second");
+        assertTrue(state.play().isEmpty());
+        assertTrue(state.stop());
+        state.receivePlaybackState(false);
         assertEquals("https://radio.example/second", state.play().orElseThrow());
         assertTrue(state.canStop());
     }
@@ -37,6 +41,7 @@ class RadioEditStateTest {
     void invalidOrEmptyInputCannotBePlayedButConfiguredRadioCanStop() {
         RadioEditState state = new RadioEditState();
         state.receiveInitialUrl("https://radio.example/live");
+        state.receivePlaybackState(false);
 
         state.update("broken");
         assertFalse(state.valid());
@@ -53,6 +58,7 @@ class RadioEditStateTest {
     void stopDoesNotApplyUnsavedUrlEdits() {
         RadioEditState state = new RadioEditState();
         state.receiveInitialUrl("");
+        state.receivePlaybackState(false);
 
         state.update("https://radio.example/new");
         assertFalse(state.canStop());
@@ -64,11 +70,46 @@ class RadioEditStateTest {
     void ignoresDuplicateInitialPacketsButAllowsEditsAfterPlay() {
         RadioEditState state = new RadioEditState();
         state.receiveInitialUrl("https://radio.example/first");
+        state.receivePlaybackState(false);
 
         assertFalse(state.receiveInitialUrl("https://radio.example/stale"));
         assertEquals("https://radio.example/first", state.value());
         state.play();
         state.update("https://radio.example/late-edit");
         assertEquals("https://radio.example/late-edit", state.value());
+    }
+
+    @Test
+    void cannotPlayUntilPlaybackStateArrives() {
+        RadioEditState state = new RadioEditState();
+        state.receiveInitialUrl("https://radio.example/live");
+
+        assertFalse(state.canPlay());
+
+        state.receivePlaybackState(false);
+        assertTrue(state.canPlay());
+    }
+
+    @Test
+    void disablesPlayWhileStartingOrStartedAndEnablesItAfterStop() {
+        RadioEditState state = new RadioEditState();
+        state.receiveInitialUrl("https://radio.example/live");
+        state.receivePlaybackState(false);
+
+        assertTrue(state.play().isPresent());
+        assertFalse(state.canPlay());
+
+        // A stale stopped update must not unlock Play while the start command is pending.
+        state.receivePlaybackState(false);
+        assertFalse(state.canPlay());
+
+        state.receivePlaybackState(true);
+        assertFalse(state.canPlay());
+
+        assertTrue(state.stop());
+        assertFalse(state.canPlay());
+
+        state.receivePlaybackState(false);
+        assertTrue(state.canPlay());
     }
 }
