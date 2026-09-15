@@ -8,7 +8,6 @@ import java.util.Optional;
 final class RadioEditState {
 
     private boolean loaded;
-    private boolean configured;
     private PlaybackControlState playbackState = PlaybackControlState.UNKNOWN;
     private String value = "";
     private RadioUrlValidator.Result validation = RadioUrlValidator.validate("");
@@ -19,7 +18,6 @@ final class RadioEditState {
         }
         this.loaded = true;
         this.update(value);
-        this.configured = value != null && !value.isBlank();
         return true;
     }
 
@@ -32,7 +30,6 @@ final class RadioEditState {
         if (!this.canPlay()) {
             return Optional.empty();
         }
-        this.configured = true;
         this.playbackState = PlaybackControlState.STARTING;
         return Optional.of(this.validation.normalized());
     }
@@ -70,7 +67,8 @@ final class RadioEditState {
     }
 
     boolean canStop() {
-        return this.loaded && this.configured;
+        return this.loaded && (this.playbackState == PlaybackControlState.STARTING
+                || this.playbackState == PlaybackControlState.STARTED);
     }
 
     String value() {

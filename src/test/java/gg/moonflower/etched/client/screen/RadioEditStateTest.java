@@ -28,17 +28,19 @@ class RadioEditStateTest {
         assertTrue(state.loaded());
         assertTrue(state.canPlay());
         assertEquals("https://radio.example/live", state.play().orElseThrow());
+        assertTrue(state.canStop());
 
         state.update("https://radio.example/second");
         assertTrue(state.play().isEmpty());
         assertTrue(state.stop());
+        assertFalse(state.canStop());
         state.receivePlaybackState(false);
         assertEquals("https://radio.example/second", state.play().orElseThrow());
         assertTrue(state.canStop());
     }
 
     @Test
-    void invalidOrEmptyInputCannotBePlayedButConfiguredRadioCanStop() {
+    void invalidOrEmptyInputCannotBePlayedButStartedRadioCanStop() {
         RadioEditState state = new RadioEditState();
         state.receiveInitialUrl("https://radio.example/live");
         state.receivePlaybackState(false);
@@ -46,12 +48,15 @@ class RadioEditStateTest {
         state.update("broken");
         assertFalse(state.valid());
         assertFalse(state.canPlay());
-        assertTrue(state.stop());
+        assertFalse(state.canStop());
 
         state.update("   ");
         assertTrue(state.valid());
         assertFalse(state.canPlay());
-        assertTrue(state.stop());
+        assertFalse(state.canStop());
+
+        state.receivePlaybackState(true);
+        assertTrue(state.canStop());
     }
 
     @Test
@@ -64,6 +69,7 @@ class RadioEditStateTest {
         assertFalse(state.canStop());
         assertEquals("https://radio.example/new", state.play().orElseThrow());
         assertTrue(state.stop());
+        assertFalse(state.canStop());
     }
 
     @Test
@@ -98,18 +104,27 @@ class RadioEditStateTest {
 
         assertTrue(state.play().isPresent());
         assertFalse(state.canPlay());
+        assertTrue(state.canStop());
 
         // A stale stopped update must not unlock Play while the start command is pending.
         state.receivePlaybackState(false);
         assertFalse(state.canPlay());
+        assertTrue(state.canStop());
 
         state.receivePlaybackState(true);
         assertFalse(state.canPlay());
+        assertTrue(state.canStop());
 
         assertTrue(state.stop());
         assertFalse(state.canPlay());
+        assertFalse(state.canStop());
+
+        // A stale started update must not unlock Stop while stopping.
+        state.receivePlaybackState(true);
+        assertFalse(state.canStop());
 
         state.receivePlaybackState(false);
         assertTrue(state.canPlay());
+        assertFalse(state.canStop());
     }
 }
