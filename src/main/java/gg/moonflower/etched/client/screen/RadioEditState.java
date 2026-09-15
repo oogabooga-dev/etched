@@ -46,10 +46,13 @@ final class RadioEditState {
     }
 
     void receivePlaybackState(boolean started) {
-        if (started && this.playbackState != PlaybackControlState.STOPPING) {
-            this.playbackState = PlaybackControlState.STARTED;
-        } else if (!started && this.playbackState != PlaybackControlState.STARTING) {
-            this.playbackState = PlaybackControlState.STOPPED;
+        boolean stale = started
+                ? this.playbackState == PlaybackControlState.STOPPING
+                : this.playbackState == PlaybackControlState.STARTING;
+        if (!stale) {
+            this.playbackState = started
+                    ? PlaybackControlState.STARTED
+                    : PlaybackControlState.STOPPED;
         }
     }
 
