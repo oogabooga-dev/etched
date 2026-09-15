@@ -55,6 +55,7 @@ public class RadioBlock extends BaseEntityBlock {
     @Override
     public InteractionResult use(BlockState state, Level level, BlockPos pos, Player player, InteractionHand interactionHand, BlockHitResult blockHitResult) {
         if (level.isClientSide()) {
+            RadioClientBridge.openMenu(level, pos);
             return InteractionResult.SUCCESS;
         }
         ItemStack stack = player.getItemInHand(interactionHand);

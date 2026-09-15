@@ -72,6 +72,10 @@ public class RadioBlockEntity extends BlockEntity implements Clearable {
         return this.getConfiguration(this.getBlockState()).isEnabled();
     }
 
+    public boolean isManuallyEnabled() {
+        return this.controlState.enabled();
+    }
+
     @Override
     public void onLoad() {
         super.onLoad();

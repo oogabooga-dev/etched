@@ -1,14 +1,18 @@
 package gg.moonflower.etched.client.screen;
 
+import gg.moonflower.etched.common.blockentity.RadioBlockEntity;
 import gg.moonflower.etched.common.menu.RadioMenu;
 import gg.moonflower.etched.common.network.EtchedMessages;
 import gg.moonflower.etched.common.network.play.ServerboundSetUrlPacket;
+import gg.moonflower.etched.common.radio.RadioClientBridge;
 import gg.moonflower.etched.common.radio.RadioUrlValidator;
 import gg.moonflower.etched.core.Etched;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
@@ -29,6 +33,7 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     private static final int BUTTON_GAP = 4;
 
     private final RadioEditState editState = new RadioEditState();
+    private final BlockPos radioPos;
     private EditBox url;
     private Button playButton;
     private Button stopButton;
@@ -36,6 +41,7 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     public RadioScreen(RadioMenu menu, Inventory inventory, Component component) {
         super(menu, inventory, component);
         this.imageHeight = 51;
+        this.radioPos = RadioClientBridge.consumeOpenedMenu(inventory.player.level()).orElse(null);
     }
 
     @Override
@@ -77,6 +83,7 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     @Override
     public void containerTick() {
         this.url.tick();
+        this.syncPlaybackState();
     }
 
     @Override
@@ -107,7 +114,14 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     }
 
     public void receiveUrl(String url) {
-        if (!this.editState.receiveInitialUrl(url)) {
+        String fallback = "";
+        Minecraft minecraft = Minecraft.getInstance();
+        if (this.radioPos != null && minecraft.level != null
+                && minecraft.level.getBlockEntity(this.radioPos) instanceof RadioBlockEntity radio
+                && radio.getUrl() != null) {
+            fallback = radio.getUrl();
+        }
+        if (!this.editState.receiveInitialUrl(url, fallback)) {
             return;
         }
         this.url.setVisible(true);
@@ -129,6 +143,18 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
         }
         if (this.stopButton != null) {
             this.stopButton.active = this.editState.canStop();
+        }
+    }
+
+    private void syncPlaybackState() {
+        if (this.radioPos == null) {
+            return;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level != null
+                && minecraft.level.getBlockEntity(this.radioPos) instanceof RadioBlockEntity radio) {
+            this.editState.receivePlaybackState(radio.isManuallyEnabled());
+            this.updateActionButtons();
         }
     }
 }

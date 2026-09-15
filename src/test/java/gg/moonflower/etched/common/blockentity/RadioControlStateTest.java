@@ -44,6 +44,36 @@ class RadioControlStateTest {
     }
 
     @Test
+    void preservesKnownStationWhenLegacyServerStopsWithEmptyUrl() {
+        CompoundTag playing = new CompoundTag();
+        playing.putString("Url", "https://radio.example/live");
+        RadioControlState state = new RadioControlState();
+        state.load(playing);
+
+        CompoundTag stopped = new CompoundTag();
+        stopped.putString("Url", "");
+        state.load(stopped);
+
+        assertEquals("https://radio.example/live", state.storedUrl());
+        assertNull(state.activeUrl());
+        assertFalse(state.enabled());
+    }
+
+    @Test
+    void missingLegacyUrlClearsRememberedStation() {
+        CompoundTag playing = new CompoundTag();
+        playing.putString("Url", "https://radio.example/live");
+        RadioControlState state = new RadioControlState();
+        state.load(playing);
+
+        state.load(new CompoundTag());
+
+        assertNull(state.storedUrl());
+        assertNull(state.activeUrl());
+        assertFalse(state.enabled());
+    }
+
+    @Test
     void enabledStationKeepsTheLegacyUrlVisible() {
         RadioControlState state = new RadioControlState();
         state.apply("https://radio.example/live");
