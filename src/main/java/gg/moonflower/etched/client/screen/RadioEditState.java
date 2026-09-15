@@ -9,10 +9,7 @@ final class RadioEditState {
 
     private boolean loaded;
     private boolean configured;
-    private boolean playbackStateKnown;
-    private boolean playbackStarted;
-    private boolean startPending;
-    private boolean stopPending;
+    private PlaybackControlState playbackState = PlaybackControlState.UNKNOWN;
     private String value = "";
     private RadioUrlValidator.Result validation = RadioUrlValidator.validate("");
 
@@ -36,8 +33,7 @@ final class RadioEditState {
             return Optional.empty();
         }
         this.configured = true;
-        this.startPending = true;
-        this.stopPending = false;
+        this.playbackState = PlaybackControlState.STARTING;
         return Optional.of(this.validation.normalized());
     }
 
@@ -45,18 +41,15 @@ final class RadioEditState {
         if (!this.canStop()) {
             return false;
         }
-        this.startPending = false;
-        this.stopPending = true;
+        this.playbackState = PlaybackControlState.STOPPING;
         return true;
     }
 
     void receivePlaybackState(boolean started) {
-        this.playbackStateKnown = true;
-        this.playbackStarted = started;
-        if (started) {
-            this.startPending = false;
-        } else {
-            this.stopPending = false;
+        if (started && this.playbackState != PlaybackControlState.STOPPING) {
+            this.playbackState = PlaybackControlState.STARTED;
+        } else if (!started && this.playbackState != PlaybackControlState.STARTING) {
+            this.playbackState = PlaybackControlState.STOPPED;
         }
     }
 
@@ -69,8 +62,7 @@ final class RadioEditState {
     }
 
     boolean canPlay() {
-        return this.loaded && this.playbackStateKnown && !this.playbackStarted
-                && !this.startPending && !this.stopPending
+        return this.loaded && this.playbackState == PlaybackControlState.STOPPED
                 && this.validation.valid() && !this.validation.normalized().isEmpty();
     }
 
@@ -80,5 +72,13 @@ final class RadioEditState {
 
     String value() {
         return this.value;
+    }
+
+    private enum PlaybackControlState {
+        UNKNOWN,
+        STOPPED,
+        STARTING,
+        STARTED,
+        STOPPING
     }
 }
