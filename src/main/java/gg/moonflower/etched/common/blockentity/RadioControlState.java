@@ -16,9 +16,11 @@ final class RadioControlState {
 
     void load(CompoundTag nbt) {
         String activeUrl = readUrl(nbt, ACTIVE_URL_TAG);
-        this.storedUrl = nbt.contains(STORED_URL_TAG, Tag.TAG_STRING)
-                ? normalize(nbt.getString(STORED_URL_TAG))
-                : activeUrl;
+        if (nbt.contains(STORED_URL_TAG, Tag.TAG_STRING)) {
+            this.storedUrl = normalize(nbt.getString(STORED_URL_TAG));
+        } else if (activeUrl != null || !nbt.contains(ACTIVE_URL_TAG, Tag.TAG_STRING)) {
+            this.storedUrl = activeUrl;
+        }
         this.enabled = this.storedUrl != null && activeUrl != null;
     }
 

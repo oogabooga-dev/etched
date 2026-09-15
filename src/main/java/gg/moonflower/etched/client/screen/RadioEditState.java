@@ -13,11 +13,15 @@ final class RadioEditState {
     private RadioUrlValidator.Result validation = RadioUrlValidator.validate("");
 
     boolean receiveInitialUrl(String value) {
+        return this.receiveInitialUrl(value, "");
+    }
+
+    boolean receiveInitialUrl(String value, String fallback) {
         if (this.loaded) {
             return false;
         }
         this.loaded = true;
-        this.update(value);
+        this.update(value == null || value.isBlank() ? fallback : value);
         return true;
     }
 

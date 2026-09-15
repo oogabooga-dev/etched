@@ -114,7 +114,14 @@ public class RadioScreen extends AbstractContainerScreen<RadioMenu> {
     }
 
     public void receiveUrl(String url) {
-        if (!this.editState.receiveInitialUrl(url)) {
+        String fallback = "";
+        Minecraft minecraft = Minecraft.getInstance();
+        if (this.radioPos != null && minecraft.level != null
+                && minecraft.level.getBlockEntity(this.radioPos) instanceof RadioBlockEntity radio
+                && radio.getUrl() != null) {
+            fallback = radio.getUrl();
+        }
+        if (!this.editState.receiveInitialUrl(url, fallback)) {
             return;
         }
         this.url.setVisible(true);

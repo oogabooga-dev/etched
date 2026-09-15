@@ -97,6 +97,25 @@ class RadioEditStateTest {
     }
 
     @Test
+    void usesRememberedUrlWhenLegacyServerReportsStoppedRadioAsEmpty() {
+        RadioEditState state = new RadioEditState();
+
+        assertTrue(state.receiveInitialUrl("", "https://radio.example/live"));
+
+        assertEquals("https://radio.example/live", state.value());
+    }
+
+    @Test
+    void serverUrlTakesPriorityOverRememberedUrl() {
+        RadioEditState state = new RadioEditState();
+
+        assertTrue(state.receiveInitialUrl(
+                "https://radio.example/server", "https://radio.example/remembered"));
+
+        assertEquals("https://radio.example/server", state.value());
+    }
+
+    @Test
     void disablesPlayWhileStartingOrStartedAndEnablesItAfterStop() {
         RadioEditState state = new RadioEditState();
         state.receiveInitialUrl("https://radio.example/live");
